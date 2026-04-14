@@ -14,6 +14,7 @@ func main() {
 	var (
 		chromiumHistory  = flag.String("chromium-history", "", "path to the Chromium History SQLite database")
 		chromiumFavicons = flag.String("chromium-favicons", "", "path to the Chromium Favicons SQLite database")
+		chromiumWebData  = flag.String("chromium-web-data", "", "path to the Chromium Web Data SQLite database")
 		firefoxProfile   = flag.String("firefox-profile", "", "path to the Firefox profile directory")
 	)
 	flag.Parse()
@@ -23,7 +24,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := converter.ConvertHistory(context.Background(), *chromiumHistory, *chromiumFavicons, *firefoxProfile); err != nil {
+	if err := converter.ConvertHistory(context.Background(), *chromiumHistory, *chromiumFavicons, *chromiumWebData, *firefoxProfile); err != nil {
 		log.Fatalf("convert history: %v", err)
 	}
 
