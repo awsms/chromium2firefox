@@ -6,10 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"chromium2firefox/internal/history/chromium"
-	"chromium2firefox/internal/history/firefox"
-	chromiumsearch "chromium2firefox/internal/search/chromium"
-	firefoxsearch "chromium2firefox/internal/search/firefox"
+	"chromium2firefox/internal/chromium"
+	"chromium2firefox/internal/firefox"
 )
 
 func ConvertProfile(ctx context.Context, chromiumProfileDir, firefoxProfileDir string) error {
@@ -48,11 +46,11 @@ func ConvertProfile(ctx context.Context, chromiumProfileDir, firefoxProfileDir s
 	}
 
 	if webDataPath != "" {
-		engines, err := chromiumsearch.ReadWebData(ctx, webDataPath)
+		engines, err := chromium.ReadWebData(ctx, webDataPath)
 		if err != nil {
 			return fmt.Errorf("read chromium web data: %w", err)
 		}
-		if err := firefoxsearch.ImportSearchEngines(ctx, firefoxProfileDir, engines); err != nil {
+		if err := firefox.ImportSearchEngines(ctx, firefoxProfileDir, engines); err != nil {
 			return fmt.Errorf("import into firefox search settings: %w", err)
 		}
 	}

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	chromiumsearch "chromium2firefox/internal/search/chromium"
+	"chromium2firefox/internal/chromium"
 )
 
 func TestImportSearchEnginesMergesCustomChromiumEngines(t *testing.T) {
@@ -22,7 +22,7 @@ func TestImportSearchEnginesMergesCustomChromiumEngines(t *testing.T) {
 	}
 	t.Setenv("MOZLZ4_BIN", mozlz4Path)
 
-	engines := []chromiumsearch.Engine{
+	engines := []chromium.Engine{
 		{
 			ID:         1,
 			Name:       "Discogs",

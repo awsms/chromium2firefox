@@ -1,7 +1,8 @@
 # chromium2firefox
 
-`chromium2firefox` is a Go utility for migrating browser data from Chromium-based browsers into Firefox profiles.
-plz close both browsers before running the importer.
+`chromium2firefox` is a Go utility for migrating browser data from Chromium-based browsers into Firefox profiles. only tested on Linux.
+
+plz close both browsers before trying to run the tool.
 
 for now, it can export Chromium data into Firefox by merging:
 - URLs

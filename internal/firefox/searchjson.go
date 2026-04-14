@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	chromiumsearch "chromium2firefox/internal/search/chromium"
+	"chromium2firefox/internal/chromium"
 )
 
 const (
@@ -53,7 +53,7 @@ type persistedEngineParam struct {
 	Value string `json:"value"`
 }
 
-func ImportSearchEngines(ctx context.Context, profileDir string, engines []chromiumsearch.Engine) error {
+func ImportSearchEngines(ctx context.Context, profileDir string, engines []chromium.Engine) error {
 	candidates := filterImportableEngines(engines)
 	if len(candidates) == 0 {
 		return nil
@@ -143,8 +143,8 @@ func backupSettingsFile(path string) error {
 	return dst.Sync()
 }
 
-func filterImportableEngines(engines []chromiumsearch.Engine) []chromiumsearch.Engine {
-	var out []chromiumsearch.Engine
+func filterImportableEngines(engines []chromium.Engine) []chromium.Engine {
+	var out []chromium.Engine
 	for _, engine := range engines {
 		if !engine.IsActive {
 			continue
@@ -163,7 +163,7 @@ func filterImportableEngines(engines []chromiumsearch.Engine) []chromiumsearch.E
 	return out
 }
 
-func toPersistedEngine(engine chromiumsearch.Engine) persistedEngine {
+func toPersistedEngine(engine chromium.Engine) persistedEngine {
 	out := persistedEngine{
 		ID:       firefoxEngineID(engine),
 		Name:     strings.TrimSpace(engine.Name),
@@ -201,7 +201,7 @@ func toPersistedEngine(engine chromiumsearch.Engine) persistedEngine {
 	return out
 }
 
-func firefoxEngineID(engine chromiumsearch.Engine) string {
+func firefoxEngineID(engine chromium.Engine) string {
 	return "chromium-" + strconv.FormatInt(engine.ID, 10)
 }
 

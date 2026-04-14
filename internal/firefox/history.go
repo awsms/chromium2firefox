@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"chromium2firefox/internal/history/chromium"
+	"chromium2firefox/internal/chromium"
 
 	_ "modernc.org/sqlite"
 )
