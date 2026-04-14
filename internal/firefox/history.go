@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"chromium2firefox/internal/chromium"
+	"chromium2firefox/internal/progress"
 
 	_ "modernc.org/sqlite"
 )
@@ -72,14 +73,18 @@ type pageIconState struct {
 	pageURL string
 }
 
-func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Dataset) error {
+func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Dataset, sourceSize int64, reporter progress.Sink) error {
 	placesPath := filepath.Join(profileDir, "places.sqlite")
 	if err := ensurePlacesWritable(placesPath); err != nil {
 		return err
 	}
 
-	if err := backupFile(placesPath); err != nil {
+	if err := backupFile(placesPath, reporter); err != nil {
 		return fmt.Errorf("backup places.sqlite: %w", err)
+	}
+	importSize, finalizeSize := splitStageSize(sourceSize, 90)
+	if reporter != nil {
+		reporter.StartStage("importing", placesPath, importSize)
 	}
 
 	db, err := sql.Open("sqlite", placesPath)
@@ -118,6 +123,7 @@ func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Data
 
 	typedInputs := make(map[int64]int)
 	placeIDsByChromiumURL := make(map[int64]int64, len(dataset.URLs))
+	progressor := newStageProgress(reporter, importSize, int64(len(dataset.URLs)+len(dataset.Visits)))
 	for _, page := range dataset.URLs {
 		placeID, err := ensurePlace(ctx, tx, originIDs, placesByURL, page)
 		if err != nil {
@@ -127,6 +133,7 @@ func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Data
 		if page.TypedCount > 0 {
 			typedInputs[placeID] += page.TypedCount
 		}
+		progressor.Step(1)
 	}
 
 	insertedVisitIDs := make(map[int64]int64, len(dataset.Visits))
@@ -169,6 +176,12 @@ func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Data
 			date:     visitDate,
 			typeCode: typeCode,
 		}
+		progressor.Step(1)
+	}
+
+	if reporter != nil {
+		reporter.FinishStage("importing", placesPath, importSize)
+		reporter.StartStage("finalizing", placesPath, finalizeSize)
 	}
 
 	if err := reconcilePlaces(ctx, tx, placesByURL); err != nil {
@@ -182,11 +195,14 @@ func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Data
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
+	if reporter != nil {
+		reporter.FinishStage("finalizing", placesPath, finalizeSize)
+	}
 
 	return nil
 }
 
-func ImportFavicons(ctx context.Context, profileDir string, favicons []chromium.Favicon) error {
+func ImportFavicons(ctx context.Context, profileDir string, favicons []chromium.Favicon, sourceSize int64, reporter progress.Sink) error {
 	if len(favicons) == 0 {
 		return nil
 	}
@@ -196,9 +212,14 @@ func ImportFavicons(ctx context.Context, profileDir string, favicons []chromium.
 		return err
 	}
 
-	if err := backupFile(faviconsPath); err != nil {
+	if err := backupFile(faviconsPath, reporter); err != nil {
 		return fmt.Errorf("backup favicons.sqlite: %w", err)
 	}
+	importSize, finalizeSize := splitStageSize(sourceSize, 95)
+	if reporter != nil {
+		reporter.StartStage("importing", faviconsPath, importSize)
+	}
+	progressor := newStageProgress(reporter, importSize, int64(len(favicons)))
 
 	db, err := sql.Open("sqlite", faviconsPath)
 	if err != nil {
@@ -244,10 +265,18 @@ func ImportFavicons(ctx context.Context, profileDir string, favicons []chromium.
 		if err := ensureIconMapping(ctx, tx, mappings, pageID, iconID); err != nil {
 			return err
 		}
+		progressor.Step(1)
+	}
+	if reporter != nil {
+		reporter.FinishStage("importing", faviconsPath, importSize)
+		reporter.StartStage("finalizing", faviconsPath, finalizeSize)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit favicon transaction: %w", err)
+	}
+	if reporter != nil {
+		reporter.FinishStage("finalizing", faviconsPath, finalizeSize)
 	}
 
 	return nil
@@ -264,12 +293,20 @@ func ensurePlacesWritable(placesPath string) error {
 	return nil
 }
 
-func backupFile(path string) error {
+func backupFile(path string, reporter progress.Sink) error {
 	src, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer src.Close()
+
+	info, err := src.Stat()
+	if err != nil {
+		return err
+	}
+	if reporter != nil {
+		reporter.StartStage("backing up", path, info.Size())
+	}
 
 	backupPath := fmt.Sprintf("%s.chromium2firefox.%s.bak", path, time.Now().UTC().Format("20060102T150405Z"))
 	dst, err := os.OpenFile(backupPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -278,11 +315,89 @@ func backupFile(path string) error {
 	}
 	defer dst.Close()
 
-	if _, err := io.Copy(dst, src); err != nil {
+	if _, err := io.Copy(dst, newProgressReader(src, reporter)); err != nil {
 		return err
 	}
 
-	return dst.Sync()
+	if err := dst.Sync(); err != nil {
+		return err
+	}
+	if reporter != nil {
+		reporter.FinishStage("backing up", path, info.Size())
+	}
+	return nil
+}
+
+type progressReader struct {
+	reader   io.Reader
+	reporter progress.Sink
+}
+
+func newProgressReader(reader io.Reader, reporter progress.Sink) io.Reader {
+	if reporter == nil {
+		return reader
+	}
+	return &progressReader{reader: reader, reporter: reporter}
+}
+
+func (r *progressReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		r.reporter.Advance(int64(n))
+	}
+	return n, err
+}
+
+type stageProgress struct {
+	reporter progress.Sink
+	size     int64
+	total    int64
+	done     int64
+	reported int64
+}
+
+func newStageProgress(reporter progress.Sink, size, total int64) *stageProgress {
+	return &stageProgress{
+		reporter: reporter,
+		size:     size,
+		total:    total,
+	}
+}
+
+func (p *stageProgress) Step(units int64) {
+	if p == nil || p.reporter == nil || p.total <= 0 || units <= 0 {
+		return
+	}
+	p.done += units
+	target := (p.size * p.done) / p.total
+	delta := target - p.reported
+	if delta <= 0 {
+		return
+	}
+	p.reported = target
+	p.reporter.Advance(delta)
+}
+
+func splitStageSize(total int64, importPercent int64) (int64, int64) {
+	if total <= 1 {
+		return 1, 1
+	}
+	if importPercent <= 0 || importPercent >= 100 {
+		importPercent = 90
+	}
+	importSize := (total * importPercent) / 100
+	if importSize < 1 {
+		importSize = 1
+	}
+	finalizeSize := total - importSize
+	if finalizeSize < 1 {
+		finalizeSize = 1
+		importSize = total - 1
+		if importSize < 1 {
+			importSize = 1
+		}
+	}
+	return importSize, finalizeSize
 }
 
 func loadOrigins(ctx context.Context, tx *sql.Tx) (map[originKey]int64, error) {

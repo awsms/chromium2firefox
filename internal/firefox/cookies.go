@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"chromium2firefox/internal/chromium"
+	"chromium2firefox/internal/progress"
 
 	_ "modernc.org/sqlite"
 )
@@ -23,7 +24,7 @@ const (
 	firefoxSchemeHTTPS = 2
 )
 
-func ImportCookies(ctx context.Context, profileDir string, cookies []chromium.Cookie) error {
+func ImportCookies(ctx context.Context, profileDir string, cookies []chromium.Cookie, sourceSize int64, reporter progress.Sink) error {
 	if len(cookies) == 0 {
 		return nil
 	}
@@ -33,8 +34,12 @@ func ImportCookies(ctx context.Context, profileDir string, cookies []chromium.Co
 		return err
 	}
 
-	if err := backupFile(cookiesPath); err != nil {
+	if err := backupFile(cookiesPath, reporter); err != nil {
 		return fmt.Errorf("backup cookies.sqlite: %w", err)
+	}
+	importSize, finalizeSize := splitStageSize(sourceSize, 95)
+	if reporter != nil {
+		reporter.StartStage("importing", cookiesPath, importSize)
 	}
 
 	db, err := sql.Open("sqlite", cookiesPath)
@@ -75,6 +80,7 @@ ON CONFLICT(name, host, path, originAttributes) DO UPDATE SET
 		return fmt.Errorf("prepare cookie upsert: %w", err)
 	}
 	defer stmt.Close()
+	progressor := newStageProgress(reporter, importSize, int64(len(cookies)))
 
 	for _, cookie := range cookies {
 		originAttrs, err := firefoxOriginAttributes(cookie.TopFrameSiteKey)
@@ -107,10 +113,18 @@ ON CONFLICT(name, host, path, originAttributes) DO UPDATE SET
 		); err != nil {
 			return fmt.Errorf("upsert cookie %s for %s: %w", cookie.Name, cookie.HostKey, err)
 		}
+		progressor.Step(1)
+	}
+	if reporter != nil {
+		reporter.FinishStage("importing", cookiesPath, importSize)
+		reporter.StartStage("finalizing", cookiesPath, finalizeSize)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit cookie transaction: %w", err)
+	}
+	if reporter != nil {
+		reporter.FinishStage("finalizing", cookiesPath, finalizeSize)
 	}
 	return nil
 }

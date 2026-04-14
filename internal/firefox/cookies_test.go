@@ -30,7 +30,7 @@ func TestImportCookiesMergesAndPreservesPartitioning(t *testing.T) {
 		t.Fatalf("ReadCookies() error = %v", err)
 	}
 
-	if err := ImportCookies(ctx, profileDir, cookies); err != nil {
+	if err := ImportCookies(ctx, profileDir, cookies, 1024, nil); err != nil {
 		t.Fatalf("ImportCookies() error = %v", err)
 	}
 

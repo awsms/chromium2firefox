@@ -48,7 +48,7 @@ func TestImportSearchEnginesMergesCustomChromiumEngines(t *testing.T) {
 		},
 	}
 
-	if err := ImportSearchEngines(context.Background(), profileDir, engines); err != nil {
+	if err := ImportSearchEngines(context.Background(), profileDir, engines, 1024, nil); err != nil {
 		t.Fatalf("ImportSearchEngines() error = %v", err)
 	}
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"chromium2firefox/internal/chromium"
+	"chromium2firefox/internal/progress"
 )
 
 const (
@@ -53,7 +54,7 @@ type persistedEngineParam struct {
 	Value string `json:"value"`
 }
 
-func ImportSearchEngines(ctx context.Context, profileDir string, engines []chromium.Engine) error {
+func ImportSearchEngines(ctx context.Context, profileDir string, engines []chromium.Engine, sourceSize int64, reporter progress.Sink) error {
 	candidates := filterImportableEngines(engines)
 	if len(candidates) == 0 {
 		return nil
@@ -63,8 +64,12 @@ func ImportSearchEngines(ctx context.Context, profileDir string, engines []chrom
 	if err := ensureSettingsWritable(settingsPath); err != nil {
 		return err
 	}
-	if err := backupSettingsFile(settingsPath); err != nil {
+	if err := backupSettingsFile(settingsPath, reporter); err != nil {
 		return fmt.Errorf("backup %s: %w", searchMZLZ4File, err)
+	}
+	importSize, finalizeSize := splitStageSize(sourceSize, 90)
+	if reporter != nil {
+		reporter.StartStage("importing", settingsPath, importSize)
 	}
 
 	settings, err := readSearchSettings(ctx, settingsPath)
@@ -87,6 +92,7 @@ func ImportSearchEngines(ctx context.Context, profileDir string, engines []chrom
 		}
 	}
 
+	progressor := newStageProgress(reporter, importSize, int64(len(candidates)))
 	for _, engine := range candidates {
 		persisted := toPersistedEngine(engine)
 		if _, ok := existingIDs[persisted.ID]; ok {
@@ -103,13 +109,24 @@ func ImportSearchEngines(ctx context.Context, profileDir string, engines []chrom
 		settings.Engines = append(settings.Engines, raw)
 		existingIDs[persisted.ID] = struct{}{}
 		existingNames[strings.ToLower(persisted.Name)] = struct{}{}
+		progressor.Step(1)
 	}
 
 	if len(settings.Engines) == 0 {
 		return fmt.Errorf("cannot write %s without any engines", searchMZLZ4File)
 	}
 
-	return writeSearchSettings(ctx, settingsPath, settings)
+	if reporter != nil {
+		reporter.FinishStage("importing", settingsPath, importSize)
+		reporter.StartStage("finalizing", settingsPath, finalizeSize)
+	}
+	if err := writeSearchSettings(ctx, settingsPath, settings); err != nil {
+		return err
+	}
+	if reporter != nil {
+		reporter.FinishStage("finalizing", settingsPath, finalizeSize)
+	}
+	return nil
 }
 
 func ensureSettingsWritable(path string) error {
@@ -123,12 +140,20 @@ func ensureSettingsWritable(path string) error {
 	return nil
 }
 
-func backupSettingsFile(path string) error {
+func backupSettingsFile(path string, reporter progress.Sink) error {
 	src, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer src.Close()
+
+	info, err := src.Stat()
+	if err != nil {
+		return err
+	}
+	if reporter != nil {
+		reporter.StartStage("backing up", path, info.Size())
+	}
 
 	backupPath := fmt.Sprintf("%s.chromium2firefox.%s.bak", path, time.Now().UTC().Format("20060102T150405Z"))
 	dst, err := os.OpenFile(backupPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -137,10 +162,16 @@ func backupSettingsFile(path string) error {
 	}
 	defer dst.Close()
 
-	if _, err := io.Copy(dst, src); err != nil {
+	if _, err := io.Copy(dst, newProgressReader(src, reporter)); err != nil {
 		return err
 	}
-	return dst.Sync()
+	if err := dst.Sync(); err != nil {
+		return err
+	}
+	if reporter != nil {
+		reporter.FinishStage("backing up", path, info.Size())
+	}
+	return nil
 }
 
 func filterImportableEngines(engines []chromium.Engine) []chromium.Engine {

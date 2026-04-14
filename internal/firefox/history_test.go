@@ -32,14 +32,14 @@ func TestImportHistoryMergesPlacesAndVisits(t *testing.T) {
 		t.Fatalf("ReadHistory() error = %v", err)
 	}
 
-	if err := ImportHistory(ctx, profileDir, dataset); err != nil {
+	if err := ImportHistory(ctx, profileDir, dataset, 1024, nil); err != nil {
 		t.Fatalf("ImportHistory() error = %v", err)
 	}
 	faviconDataset, err := chromium.ReadFavicons(ctx, chromiumFaviconsPath)
 	if err != nil {
 		t.Fatalf("ReadFavicons() error = %v", err)
 	}
-	if err := ImportFavicons(ctx, profileDir, faviconDataset); err != nil {
+	if err := ImportFavicons(ctx, profileDir, faviconDataset, 1024, nil); err != nil {
 		t.Fatalf("ImportFavicons() error = %v", err)
 	}
 
