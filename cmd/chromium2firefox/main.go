@@ -12,19 +12,17 @@ import (
 
 func main() {
 	var (
-		chromiumHistory  = flag.String("chromium-history", "", "path to the Chromium History SQLite database")
-		chromiumFavicons = flag.String("chromium-favicons", "", "path to the Chromium Favicons SQLite database")
-		chromiumWebData  = flag.String("chromium-web-data", "", "path to the Chromium Web Data SQLite database")
-		firefoxProfile   = flag.String("firefox-profile", "", "path to the Firefox profile directory")
+		chromiumProfile = flag.String("chromium-profile", "", "path to the Chromium profile directory")
+		firefoxProfile  = flag.String("firefox-profile", "", "path to the Firefox profile directory")
 	)
 	flag.Parse()
 
-	if *chromiumHistory == "" || *firefoxProfile == "" {
+	if *chromiumProfile == "" || *firefoxProfile == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
 
-	if err := converter.ConvertHistory(context.Background(), *chromiumHistory, *chromiumFavicons, *chromiumWebData, *firefoxProfile); err != nil {
+	if err := converter.ConvertProfile(context.Background(), *chromiumProfile, *firefoxProfile); err != nil {
 		log.Fatalf("convert history: %v", err)
 	}
 

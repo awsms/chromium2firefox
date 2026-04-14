@@ -16,13 +16,11 @@ for now, it can export Chromium data into Firefox by merging:
 
 ```bash
 go run ./cmd/chromium2firefox \
-  -chromium-history /path/to/History \
-  -chromium-favicons /path/to/Favicons \
-  -chromium-web-data /path/to/Web\ Data \
+  -chromium-profile /path/to/chromium/profile \
   -firefox-profile /path/to/firefox/profile
 ```
 
-if `-chromium-favicons` or `-chromium-web-data` are omitted, the tool will try sibling `Favicons` and `Web Data` files next to the `History` file when they exist and are non-empty.
+Chromium profile is expected to contain `History`. `Favicons` and `Web Data` are imported too when those files exist and are non-empty in the same profile directory.
 
 search engine import is conservative for the first pass:
 - it reads Chromium engines from the `keywords` table

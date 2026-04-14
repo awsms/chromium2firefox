@@ -12,22 +12,29 @@ import (
 	firefoxsearch "chromium2firefox/internal/search/firefox"
 )
 
-func ConvertHistory(ctx context.Context, chromiumHistoryPath, chromiumFaviconsPath, chromiumWebDataPath, firefoxProfileDir string) error {
-	dataset, err := chromium.ReadHistory(ctx, chromiumHistoryPath)
+func ConvertProfile(ctx context.Context, chromiumProfileDir, firefoxProfileDir string) error {
+	historyPath, err := discoverRequiredProfileFile(chromiumProfileDir, "History")
+	if err != nil {
+		return err
+	}
+
+	faviconPath, err := discoverOptionalProfileFile(chromiumProfileDir, "Favicons")
+	if err != nil {
+		return err
+	}
+
+	webDataPath, err := discoverOptionalProfileFile(chromiumProfileDir, "Web Data")
+	if err != nil {
+		return err
+	}
+
+	dataset, err := chromium.ReadHistory(ctx, historyPath)
 	if err != nil {
 		return fmt.Errorf("read chromium history: %w", err)
 	}
 
 	if err := firefox.ImportHistory(ctx, firefoxProfileDir, dataset); err != nil {
 		return fmt.Errorf("import into firefox places database: %w", err)
-	}
-
-	faviconPath := chromiumFaviconsPath
-	if faviconPath == "" {
-		candidate := filepath.Join(filepath.Dir(chromiumHistoryPath), "Favicons")
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Size() > 0 {
-			faviconPath = candidate
-		}
 	}
 
 	if faviconPath != "" {
@@ -37,14 +44,6 @@ func ConvertHistory(ctx context.Context, chromiumHistoryPath, chromiumFaviconsPa
 		}
 		if err := firefox.ImportFavicons(ctx, firefoxProfileDir, favicons); err != nil {
 			return fmt.Errorf("import into firefox favicons database: %w", err)
-		}
-	}
-
-	webDataPath := chromiumWebDataPath
-	if webDataPath == "" {
-		candidate := filepath.Join(filepath.Dir(chromiumHistoryPath), "Web Data")
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Size() > 0 {
-			webDataPath = candidate
 		}
 	}
 
@@ -59,4 +58,37 @@ func ConvertHistory(ctx context.Context, chromiumHistoryPath, chromiumFaviconsPa
 	}
 
 	return nil
+}
+
+func discoverRequiredProfileFile(profileDir, name string) (string, error) {
+	path := filepath.Join(profileDir, name)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("chromium profile %s is missing %s", profileDir, name)
+		}
+		return "", fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("%s is a directory", path)
+	}
+	if info.Size() == 0 {
+		return "", fmt.Errorf("%s is empty", path)
+	}
+	return path, nil
+}
+
+func discoverOptionalProfileFile(profileDir, name string) (string, error) {
+	path := filepath.Join(profileDir, name)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.IsDir() || info.Size() == 0 {
+		return "", nil
+	}
+	return path, nil
 }
