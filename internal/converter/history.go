@@ -21,6 +21,11 @@ func ConvertProfile(ctx context.Context, chromiumProfileDir, firefoxProfileDir s
 		return err
 	}
 
+	cookiesPath, err := discoverOptionalProfileFile(chromiumProfileDir, "Cookies")
+	if err != nil {
+		return err
+	}
+
 	webDataPath, err := discoverOptionalProfileFile(chromiumProfileDir, "Web Data")
 	if err != nil {
 		return err
@@ -42,6 +47,16 @@ func ConvertProfile(ctx context.Context, chromiumProfileDir, firefoxProfileDir s
 		}
 		if err := firefox.ImportFavicons(ctx, firefoxProfileDir, favicons); err != nil {
 			return fmt.Errorf("import into firefox favicons database: %w", err)
+		}
+	}
+
+	if cookiesPath != "" {
+		cookies, err := chromium.ReadCookies(ctx, cookiesPath)
+		if err != nil {
+			return fmt.Errorf("read chromium cookies: %w", err)
+		}
+		if err := firefox.ImportCookies(ctx, firefoxProfileDir, cookies); err != nil {
+			return fmt.Errorf("import into firefox cookies database: %w", err)
 		}
 	}
 

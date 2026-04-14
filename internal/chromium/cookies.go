@@ -8,7 +8,6 @@ import (
 	"crypto/sha1"
 	"database/sql"
 	"fmt"
-	"net/url"
 	"os/exec"
 	"strings"
 
@@ -261,23 +260,4 @@ func chromiumMicrosToUnixMillis(value int64) int64 {
 		return 0
 	}
 	return chromiumMicrosToUnixMicros(value) / 1000
-}
-
-func FirefoxOriginAttributes(topFrameSiteKey string) (string, error) {
-	if topFrameSiteKey == "" {
-		return "", nil
-	}
-
-	parsed, err := url.Parse(topFrameSiteKey)
-	if err != nil {
-		return "", fmt.Errorf("parse top frame site key %q: %w", topFrameSiteKey, err)
-	}
-
-	host := parsed.Hostname()
-	if parsed.Scheme == "" || host == "" {
-		return "", fmt.Errorf("unsupported top frame site key %q", topFrameSiteKey)
-	}
-
-	partitionKey := fmt.Sprintf("(%s,%s)", parsed.Scheme, host)
-	return "^partitionKey=" + url.QueryEscape(partitionKey), nil
 }

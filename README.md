@@ -11,6 +11,7 @@ for now, it can export Chromium data into Firefox by merging:
 - typed/hidden flags
 - origin rows
 - favicons
+- cookies
 - search engines from `Web Data` into `search.json.mozlz4`
 
 ## Usage
@@ -21,7 +22,7 @@ go run ./cmd/chromium2firefox \
   -firefox-profile /path/to/firefox/profile
 ```
 
-Chromium profile is expected to contain `History`. `Favicons` and `Web Data` are imported too when those files exist and are non-empty in the same profile directory.
+Chromium profile is expected to contain `History`. `Favicons`, `Cookies`, and `Web Data` are imported too when those files exist and are non-empty in the same profile directory.
 
 search engine import is conservative for the first pass:
 - it reads Chromium engines from the `keywords` table
@@ -33,7 +34,7 @@ search engine import is conservative for the first pass:
 ## TODO
 
 - [ ] attempt to export extensions settings (hopium)
-- [ ] attempt to export cookies/sites data
+- [ ] attempt to export leveldb-backed site storage
 
 ## Not planned
 
