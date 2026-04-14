@@ -6,6 +6,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha1"
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"os/exec"
@@ -42,6 +43,11 @@ func ReadCookies(ctx context.Context, cookiesPath string) ([]Cookie, error) {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
 	defer db.Close()
+
+	hasDomainHashPrefix, err := chromiumCookiesHaveDomainHashPrefix(ctx, db)
+	if err != nil {
+		return nil, err
+	}
 
 	rows, err := db.QueryContext(ctx, `
 SELECT
@@ -106,7 +112,7 @@ ORDER BY last_access_utc ASC
 		if plaintextValue != "" {
 			item.Value = plaintextValue
 		} else {
-			value, err := decryptCookieValue(encryptedValue, v11Password, v11PasswordErr)
+			value, err := decryptCookieValue(item.HostKey, encryptedValue, hasDomainHashPrefix, v11Password, v11PasswordErr)
 			if err != nil {
 				return nil, fmt.Errorf("decrypt cookie %s for %s: %w", item.Name, item.HostKey, err)
 			}
@@ -135,26 +141,61 @@ ORDER BY last_access_utc ASC
 	return out, nil
 }
 
-func decryptCookieValue(ciphertext []byte, v11Password string, v11PasswordErr error) (string, error) {
+func chromiumCookiesHaveDomainHashPrefix(ctx context.Context, db *sql.DB) (bool, error) {
+	var version int
+	err := db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'version'`).Scan(&version)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		if strings.Contains(err.Error(), "no such table: meta") {
+			return false, nil
+		}
+		return false, fmt.Errorf("query cookies meta version: %w", err)
+	}
+	return version >= 24, nil
+}
+
+func decryptCookieValue(hostKey string, ciphertext []byte, hasDomainHashPrefix bool, v11Password string, v11PasswordErr error) (string, error) {
+	var plaintext []byte
+	var err error
 	switch {
 	case bytes.HasPrefix(ciphertext, []byte(chromiumCookiePrefixV10)):
-		plaintext, err := decryptCBC(ciphertext[len(chromiumCookiePrefixV10):], deriveLinuxCookieKey("peanuts"))
+		plaintext, err = decryptCBC(ciphertext[len(chromiumCookiePrefixV10):], deriveLinuxCookieKey("peanuts"))
 		if err != nil {
 			return "", err
 		}
-		return string(plaintext), nil
 	case bytes.HasPrefix(ciphertext, []byte(chromiumCookiePrefixV11)):
 		if v11PasswordErr != nil {
 			return "", v11PasswordErr
 		}
-		plaintext, err := decryptCBC(ciphertext[len(chromiumCookiePrefixV11):], deriveLinuxCookieKey(v11Password))
+		plaintext, err = decryptCBC(ciphertext[len(chromiumCookiePrefixV11):], deriveLinuxCookieKey(v11Password))
 		if err != nil {
 			return "", err
 		}
-		return string(plaintext), nil
 	default:
 		return string(ciphertext), nil
 	}
+
+	if hasDomainHashPrefix {
+		plaintext, err = stripCookieDomainHash(hostKey, plaintext)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	return string(plaintext), nil
+}
+
+func stripCookieDomainHash(hostKey string, plaintext []byte) ([]byte, error) {
+	if len(plaintext) < sha256.Size {
+		return nil, fmt.Errorf("plaintext too short for domain hash")
+	}
+	expected := sha256.Sum256([]byte(hostKey))
+	if !bytes.Equal(plaintext[:sha256.Size], expected[:]) {
+		return nil, fmt.Errorf("domain hash mismatch")
+	}
+	return plaintext[sha256.Size:], nil
 }
 
 func lookupV11Password(ctx context.Context) (string, error) {

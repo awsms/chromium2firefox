@@ -138,6 +138,18 @@ WHERE host = '.example.org' AND name = 'filecookie'
 		t.Fatalf("file cookie partition flag = %d, want 1", filePartition.partitionFlag)
 	}
 
+	var unsetSameSite int
+	if err := db.QueryRow(`
+SELECT sameSite
+FROM moz_cookies
+WHERE host = '.unset.example' AND name = 'unsetcookie'
+`).Scan(&unsetSameSite); err != nil {
+		t.Fatalf("query unset sameSite cookie: %v", err)
+	}
+	if unsetSameSite != firefoxSameSiteUnset {
+		t.Fatalf("unset sameSite = %d, want %d", unsetSameSite, firefoxSameSiteUnset)
+	}
+
 	backups, err := filepath.Glob(cookiesPath + ".chromium2firefox.*.bak")
 	if err != nil {
 		t.Fatalf("Glob(backups): %v", err)
@@ -295,6 +307,23 @@ INSERT INTO cookies (
 			sameSite:      0,
 			sourceScheme:  1,
 			lastUpdateUTC: unixToChromiumMicros(1710000450000000),
+		},
+		{
+			creationUTC:   unixToChromiumMicros(1710000600000000),
+			hostKey:       ".unset.example",
+			topFrame:      "",
+			name:          "unsetcookie",
+			value:         "unset-samesite",
+			path:          "/",
+			expiresUTC:    unixToChromiumMicros(1710009200000000),
+			isSecure:      1,
+			isHTTPOnly:    0,
+			lastAccessUTC: unixToChromiumMicros(1710000700000000),
+			hasExpires:    1,
+			isPersistent:  1,
+			sameSite:      -1,
+			sourceScheme:  2,
+			lastUpdateUTC: unixToChromiumMicros(1710000650000000),
 		},
 	}
 

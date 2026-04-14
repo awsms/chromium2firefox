@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	firefoxSameSiteUnset  = 0
+	firefoxSameSiteUnset  = 256
 	firefoxSameSiteLax    = 1
 	firefoxSameSiteStrict = 2
 	firefoxSameSiteNone   = 0
