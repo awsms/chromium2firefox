@@ -4,11 +4,15 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
 
-const assumedBytesPerSecond = 64 * 1024 * 1024
+const (
+	assumedBytesPerSecond         = 64 * 1024 * 1024
+	assumedFinalizeBytesPerSecond = 512 * 1024
+)
 
 type Sink interface {
 	StartStage(label, path string, size int64)
@@ -154,10 +158,33 @@ func (r *Reporter) stageEtaLocked(stageSize, stageDone int64) time.Duration {
 	if stageDone > 0 && elapsed > 0 {
 		bytesPerSecond := float64(stageDone) / elapsed.Seconds()
 		if bytesPerSecond > 0 {
-			return time.Duration(float64(remaining)/bytesPerSecond) * time.Second
+			seconds := int64(float64(remaining) / bytesPerSecond)
+			if remaining > 0 && seconds < 1 {
+				seconds = 1
+			}
+			return time.Duration(seconds) * time.Second
 		}
 	}
-	return time.Duration(remaining/assumedBytesPerSecond) * time.Second
+
+	bytesPerSecond := int64(assumedBytesPerSecond)
+	if strings.HasPrefix(r.stageDesc, "finalizing ") {
+		bytesPerSecond = assumedFinalizeBytesPerSecond
+	}
+
+	seconds := int64(0)
+	if remaining > 0 {
+		seconds = (remaining + bytesPerSecond - 1) / bytesPerSecond
+	}
+	if remaining > 0 && elapsed > 0 {
+		elapsedSeconds := int64(elapsed / time.Second)
+		if elapsedSeconds > 0 && elapsedSeconds < seconds {
+			seconds -= elapsedSeconds
+		}
+	}
+	if remaining > 0 && seconds < 1 {
+		seconds = 1
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func humanSize(size int64) string {

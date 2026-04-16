@@ -24,6 +24,23 @@ go run ./cmd/chromium2firefox \
 
 Chromium profile is expected to contain `History`. `Favicons`, `Cookies`, and `Web Data` are imported too when those files exist and are non-empty in the same profile directory.
 
+To import only one category, use `-only`:
+
+```bash
+go run ./cmd/chromium2firefox \
+  -chromium-profile /path/to/chromium/profile \
+  -firefox-profile /path/to/firefox/profile \
+  -only search
+```
+
+Supported `-only` values:
+- `history`
+- `favicons`
+- `cookies`
+- `search`
+
+You can combine them with commas, for example `-only history,favicons`.
+
 search engine import is conservative for the first pass:
 - it reads Chromium engines from the `keywords` table
 - it only imports active engines with `{searchTerms}` in the search URL

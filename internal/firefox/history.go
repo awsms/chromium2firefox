@@ -181,22 +181,35 @@ func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Data
 
 	if reporter != nil {
 		reporter.FinishStage("importing", placesPath, importSize)
-		reporter.StartStage("finalizing", placesPath, finalizeSize)
 	}
 
-	if err := reconcilePlaces(ctx, tx, placesByURL); err != nil {
+	reconcileSize, inputHistorySize, commitSize := splitFinalizeSizes(finalizeSize, 35, 15)
+	if reporter != nil {
+		reporter.StartStage("reconciling-metadata", placesPath, reconcileSize)
+	}
+	reconcileProgress := newStageProgress(reporter, reconcileSize, int64(len(placesByURL)))
+	if err := reconcilePlaces(ctx, tx, placesByURL, reconcileProgress); err != nil {
 		return err
 	}
+	if reporter != nil {
+		reporter.FinishStage("reconciling-metadata", placesPath, reconcileSize)
+		reporter.StartStage("reconciling-inputhistory", placesPath, inputHistorySize)
+	}
 
-	if err := reconcileInputHistory(ctx, tx, typedInputs); err != nil {
+	inputHistoryProgress := newStageProgress(reporter, inputHistorySize, int64(len(typedInputs)))
+	if err := reconcileInputHistory(ctx, tx, typedInputs, inputHistoryProgress); err != nil {
 		return err
+	}
+	if reporter != nil {
+		reporter.FinishStage("reconciling-inputhistory", placesPath, inputHistorySize)
+		reporter.StartStage("committing", placesPath, commitSize)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 	if reporter != nil {
-		reporter.FinishStage("finalizing", placesPath, finalizeSize)
+		reporter.FinishStage("committing", placesPath, commitSize)
 	}
 
 	return nil
@@ -398,6 +411,41 @@ func splitStageSize(total int64, importPercent int64) (int64, int64) {
 		}
 	}
 	return importSize, finalizeSize
+}
+
+func splitFinalizeSizes(total int64, firstPercent int64, secondPercent int64) (int64, int64, int64) {
+	if total <= 2 {
+		return 1, 1, 1
+	}
+	if firstPercent < 0 {
+		firstPercent = 0
+	}
+	if secondPercent < 0 {
+		secondPercent = 0
+	}
+	if firstPercent+secondPercent >= 100 {
+		firstPercent = 35
+		secondPercent = 15
+	}
+
+	first := (total * firstPercent) / 100
+	second := (total * secondPercent) / 100
+	if first < 1 {
+		first = 1
+	}
+	if second < 1 {
+		second = 1
+	}
+	third := total - first - second
+	if third < 1 {
+		third = 1
+		if second > 1 {
+			second--
+		} else if first > 1 {
+			first--
+		}
+	}
+	return first, second, third
 }
 
 func loadOrigins(ctx context.Context, tx *sql.Tx) (map[originKey]int64, error) {
@@ -827,7 +875,7 @@ VALUES (?, ?, ?, ?, 0, 0, ?)
 	return id, nil
 }
 
-func reconcilePlaces(ctx context.Context, tx *sql.Tx, placesByURL map[string]*placeState) error {
+func reconcilePlaces(ctx context.Context, tx *sql.Tx, placesByURL map[string]*placeState, progressor *stageProgress) error {
 	stmt, err := tx.PrepareContext(ctx, `
 UPDATE moz_places
 SET
@@ -864,12 +912,13 @@ WHERE id = ?
 		); err != nil {
 			return fmt.Errorf("reconcile place %s: %w", place.url, err)
 		}
+		progressor.Step(1)
 	}
 
 	return nil
 }
 
-func reconcileInputHistory(ctx context.Context, tx *sql.Tx, typedInputs map[int64]int) error {
+func reconcileInputHistory(ctx context.Context, tx *sql.Tx, typedInputs map[int64]int, progressor *stageProgress) error {
 	stmt, err := tx.PrepareContext(ctx, `
 INSERT INTO moz_inputhistory (place_id, input, use_count)
 VALUES (?, ?, ?)
@@ -883,11 +932,13 @@ ON CONFLICT(place_id, input) DO UPDATE SET
 
 	for placeID, count := range typedInputs {
 		if count <= 0 {
+			progressor.Step(1)
 			continue
 		}
 		if _, err := stmt.ExecContext(ctx, placeID, "", count); err != nil {
 			return fmt.Errorf("reconcile inputhistory for place %d: %w", placeID, err)
 		}
+		progressor.Step(1)
 	}
 
 	return nil

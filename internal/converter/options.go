@@ -1,0 +1,51 @@
+package converter
+
+import (
+	"fmt"
+	"strings"
+)
+
+type Options struct {
+	History  bool
+	Favicons bool
+	Cookies  bool
+	Search   bool
+}
+
+func DefaultOptions() Options {
+	return Options{
+		History:  true,
+		Favicons: true,
+		Cookies:  true,
+		Search:   true,
+	}
+}
+
+func ParseOnly(value string) (Options, error) {
+	if strings.TrimSpace(value) == "" {
+		return DefaultOptions(), nil
+	}
+
+	options := Options{}
+	for _, part := range strings.Split(value, ",") {
+		switch strings.TrimSpace(strings.ToLower(part)) {
+		case "history":
+			options.History = true
+		case "favicons", "favicon":
+			options.Favicons = true
+		case "cookies", "cookie":
+			options.Cookies = true
+		case "search", "search-engines", "engines":
+			options.Search = true
+		case "":
+			continue
+		default:
+			return Options{}, fmt.Errorf("unsupported -only value %q", strings.TrimSpace(part))
+		}
+	}
+
+	if !options.History && !options.Favicons && !options.Cookies && !options.Search {
+		return Options{}, fmt.Errorf("no import targets selected")
+	}
+	return options, nil
+}
