@@ -50,6 +50,22 @@ func (r *Reporter) StartStage(label, path string, size int64) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.stageSize = size
+	r.stageDone = 0
+	r.stageDesc = fmt.Sprintf("%s %s", label, filepath.Base(path))
+	r.stagePath = path
+	r.stageStarted = time.Now()
+	r.lastPrint = time.Now()
+	if label == "reading" {
+		r.printStatusLocked(
+			"[%3d%%] %s %s (%s)",
+			r.percentLocked(),
+			label,
+			filepath.Base(path),
+			humanSize(size),
+		)
+		return
+	}
 	r.printStatusLocked(
 		"[%3d%%] %s %s (%s, eta %s)",
 		r.percentLocked(),
@@ -58,12 +74,6 @@ func (r *Reporter) StartStage(label, path string, size int64) {
 		humanSize(size),
 		r.stageEtaLocked(size, 0),
 	)
-	r.stageSize = size
-	r.stageDone = 0
-	r.stageDesc = fmt.Sprintf("%s %s", label, filepath.Base(path))
-	r.stagePath = path
-	r.stageStarted = time.Now()
-	r.lastPrint = time.Now()
 }
 
 func (r *Reporter) Advance(delta int64) {

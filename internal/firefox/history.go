@@ -7,12 +7,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"chromium2firefox/internal/chromium"
 	"chromium2firefox/internal/progress"
@@ -62,20 +59,9 @@ type visitState struct {
 	typeCode int
 }
 
-type iconState struct {
-	id      int64
-	iconURL string
-	width   int
-}
-
-type pageIconState struct {
-	id      int64
-	pageURL string
-}
-
 func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Dataset, sourceSize int64, reporter progress.Sink) error {
 	placesPath := filepath.Join(profileDir, "places.sqlite")
-	if err := ensurePlacesWritable(placesPath); err != nil {
+	if err := ensureRegularFile(placesPath); err != nil {
 		return err
 	}
 
@@ -215,239 +201,6 @@ func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Data
 	return nil
 }
 
-func ImportFavicons(ctx context.Context, profileDir string, favicons []chromium.Favicon, sourceSize int64, reporter progress.Sink) error {
-	if len(favicons) == 0 {
-		return nil
-	}
-
-	faviconsPath := filepath.Join(profileDir, "favicons.sqlite")
-	if err := ensurePlacesWritable(faviconsPath); err != nil {
-		return err
-	}
-
-	if err := backupFile(faviconsPath, reporter); err != nil {
-		return fmt.Errorf("backup favicons.sqlite: %w", err)
-	}
-	importSize, finalizeSize := splitStageSize(sourceSize, 95)
-	if reporter != nil {
-		reporter.StartStage("importing", faviconsPath, importSize)
-	}
-	progressor := newStageProgress(reporter, importSize, int64(len(favicons)))
-
-	db, err := sql.Open("sqlite", faviconsPath)
-	if err != nil {
-		return fmt.Errorf("open firefox favicons database: %w", err)
-	}
-	defer db.Close()
-
-	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
-		return fmt.Errorf("set busy timeout: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
-		return fmt.Errorf("enable foreign keys: %w", err)
-	}
-
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin favicon transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	pagesByURL, err := loadPagesWithIcons(ctx, tx)
-	if err != nil {
-		return err
-	}
-	iconsByKey, err := loadIcons(ctx, tx)
-	if err != nil {
-		return err
-	}
-	mappings, err := loadIconMappings(ctx, tx)
-	if err != nil {
-		return err
-	}
-
-	for _, item := range favicons {
-		pageID, err := ensurePageWithIcon(ctx, tx, pagesByURL, item.PageURL)
-		if err != nil {
-			return err
-		}
-		iconID, err := ensureIcon(ctx, tx, iconsByKey, item)
-		if err != nil {
-			return err
-		}
-		if err := ensureIconMapping(ctx, tx, mappings, pageID, iconID); err != nil {
-			return err
-		}
-		progressor.Step(1)
-	}
-	if reporter != nil {
-		reporter.FinishStage("importing", faviconsPath, importSize)
-		reporter.StartStage("finalizing", faviconsPath, finalizeSize)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit favicon transaction: %w", err)
-	}
-	if reporter != nil {
-		reporter.FinishStage("finalizing", faviconsPath, finalizeSize)
-	}
-
-	return nil
-}
-
-func ensurePlacesWritable(placesPath string) error {
-	info, err := os.Stat(placesPath)
-	if err != nil {
-		return fmt.Errorf("stat %s: %w", placesPath, err)
-	}
-	if info.IsDir() {
-		return fmt.Errorf("%s is a directory", placesPath)
-	}
-	return nil
-}
-
-func backupFile(path string, reporter progress.Sink) error {
-	src, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-
-	info, err := src.Stat()
-	if err != nil {
-		return err
-	}
-	if reporter != nil {
-		reporter.StartStage("backing up", path, info.Size())
-	}
-
-	backupPath := fmt.Sprintf("%s.chromium2firefox.%s.bak", path, time.Now().UTC().Format("20060102T150405Z"))
-	dst, err := os.OpenFile(backupPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	defer dst.Close()
-
-	if _, err := io.Copy(dst, newProgressReader(src, reporter)); err != nil {
-		return err
-	}
-
-	if err := dst.Sync(); err != nil {
-		return err
-	}
-	if reporter != nil {
-		reporter.FinishStage("backing up", path, info.Size())
-	}
-	return nil
-}
-
-type progressReader struct {
-	reader   io.Reader
-	reporter progress.Sink
-}
-
-func newProgressReader(reader io.Reader, reporter progress.Sink) io.Reader {
-	if reporter == nil {
-		return reader
-	}
-	return &progressReader{reader: reader, reporter: reporter}
-}
-
-func (r *progressReader) Read(p []byte) (int, error) {
-	n, err := r.reader.Read(p)
-	if n > 0 {
-		r.reporter.Advance(int64(n))
-	}
-	return n, err
-}
-
-type stageProgress struct {
-	reporter progress.Sink
-	size     int64
-	total    int64
-	done     int64
-	reported int64
-}
-
-func newStageProgress(reporter progress.Sink, size, total int64) *stageProgress {
-	return &stageProgress{
-		reporter: reporter,
-		size:     size,
-		total:    total,
-	}
-}
-
-func (p *stageProgress) Step(units int64) {
-	if p == nil || p.reporter == nil || p.total <= 0 || units <= 0 {
-		return
-	}
-	p.done += units
-	target := (p.size * p.done) / p.total
-	delta := target - p.reported
-	if delta <= 0 {
-		return
-	}
-	p.reported = target
-	p.reporter.Advance(delta)
-}
-
-func splitStageSize(total int64, importPercent int64) (int64, int64) {
-	if total <= 1 {
-		return 1, 1
-	}
-	if importPercent <= 0 || importPercent >= 100 {
-		importPercent = 90
-	}
-	importSize := (total * importPercent) / 100
-	if importSize < 1 {
-		importSize = 1
-	}
-	finalizeSize := total - importSize
-	if finalizeSize < 1 {
-		finalizeSize = 1
-		importSize = total - 1
-		if importSize < 1 {
-			importSize = 1
-		}
-	}
-	return importSize, finalizeSize
-}
-
-func splitFinalizeSizes(total int64, firstPercent int64, secondPercent int64) (int64, int64, int64) {
-	if total <= 2 {
-		return 1, 1, 1
-	}
-	if firstPercent < 0 {
-		firstPercent = 0
-	}
-	if secondPercent < 0 {
-		secondPercent = 0
-	}
-	if firstPercent+secondPercent >= 100 {
-		firstPercent = 35
-		secondPercent = 15
-	}
-
-	first := (total * firstPercent) / 100
-	second := (total * secondPercent) / 100
-	if first < 1 {
-		first = 1
-	}
-	if second < 1 {
-		second = 1
-	}
-	third := total - first - second
-	if third < 1 {
-		third = 1
-		if second > 1 {
-			second--
-		} else if first > 1 {
-			first--
-		}
-	}
-	return first, second, third
-}
-
 func loadOrigins(ctx context.Context, tx *sql.Tx) (map[originKey]int64, error) {
 	rows, err := tx.QueryContext(ctx, `
 SELECT id, prefix, host
@@ -534,74 +287,6 @@ FROM moz_historyvisits
 	}
 
 	return out, nil
-}
-
-func loadPagesWithIcons(ctx context.Context, tx *sql.Tx) (map[string]int64, error) {
-	rows, err := tx.QueryContext(ctx, `
-SELECT id, page_url
-FROM moz_pages_w_icons
-`)
-	if err != nil {
-		return nil, fmt.Errorf("load pages with icons: %w", err)
-	}
-	defer rows.Close()
-
-	out := make(map[string]int64)
-	for rows.Next() {
-		var id int64
-		var pageURL string
-		if err := rows.Scan(&id, &pageURL); err != nil {
-			return nil, fmt.Errorf("scan page with icon: %w", err)
-		}
-		out[pageURL] = id
-	}
-	return out, rows.Err()
-}
-
-func loadIcons(ctx context.Context, tx *sql.Tx) (map[string]int64, error) {
-	rows, err := tx.QueryContext(ctx, `
-SELECT id, icon_url, width
-FROM moz_icons
-`)
-	if err != nil {
-		return nil, fmt.Errorf("load icons: %w", err)
-	}
-	defer rows.Close()
-
-	out := make(map[string]int64)
-	for rows.Next() {
-		var (
-			id      int64
-			iconURL string
-			width   int
-		)
-		if err := rows.Scan(&id, &iconURL, &width); err != nil {
-			return nil, fmt.Errorf("scan icon: %w", err)
-		}
-		out[iconKey(iconURL, width)] = id
-	}
-	return out, rows.Err()
-}
-
-func loadIconMappings(ctx context.Context, tx *sql.Tx) (map[string]struct{}, error) {
-	rows, err := tx.QueryContext(ctx, `
-SELECT page_id, icon_id
-FROM moz_icons_to_pages
-`)
-	if err != nil {
-		return nil, fmt.Errorf("load icon mappings: %w", err)
-	}
-	defer rows.Close()
-
-	out := make(map[string]struct{})
-	for rows.Next() {
-		var pageID, iconID int64
-		if err := rows.Scan(&pageID, &iconID); err != nil {
-			return nil, fmt.Errorf("scan icon mapping: %w", err)
-		}
-		out[mappingKey(pageID, iconID)] = struct{}{}
-	}
-	return out, rows.Err()
 }
 
 func ensurePlace(
@@ -698,81 +383,6 @@ func ensureSyntheticPlace(
 
 	placesByURL[rawURL] = &placeState{id: id, url: rawURL}
 	return id, nil
-}
-
-func ensurePageWithIcon(ctx context.Context, tx *sql.Tx, pagesByURL map[string]int64, pageURL string) (int64, error) {
-	if id, ok := pagesByURL[pageURL]; ok {
-		return id, nil
-	}
-
-	result, err := tx.ExecContext(ctx, `
-INSERT INTO moz_pages_w_icons (page_url, page_url_hash)
-VALUES (?, ?)
-`, pageURL, int64(hashURL(pageURL)))
-	if err != nil {
-		return 0, fmt.Errorf("insert page_with_icon %s: %w", pageURL, err)
-	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("get page_with_icon id for %s: %w", pageURL, err)
-	}
-	pagesByURL[pageURL] = id
-	return id, nil
-}
-
-func ensureIcon(ctx context.Context, tx *sql.Tx, iconsByKey map[string]int64, item chromium.Favicon) (int64, error) {
-	key := iconKey(item.IconURL, item.Width)
-	if id, ok := iconsByKey[key]; ok {
-		if _, err := tx.ExecContext(ctx, `
-UPDATE moz_icons
-SET data = ?, expire_ms = ?, root = ?, flags = 0
-WHERE id = ?
-`, item.ImageData, chromiumMillisToUnixMillis(item.LastUpdated), boolToInt(isRootIcon(item.IconURL)), id); err != nil {
-			return 0, fmt.Errorf("update icon %s: %w", item.IconURL, err)
-		}
-		return id, nil
-	}
-
-	result, err := tx.ExecContext(ctx, `
-INSERT INTO moz_icons (
-	icon_url, fixed_icon_url_hash, width, root, color, expire_ms, flags, data
-)
-VALUES (?, ?, ?, ?, NULL, ?, 0, ?)
-`,
-		item.IconURL,
-		int64(hashURL(item.IconURL)),
-		item.Width,
-		boolToInt(isRootIcon(item.IconURL)),
-		chromiumMillisToUnixMillis(item.LastUpdated),
-		item.ImageData,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("insert icon %s: %w", item.IconURL, err)
-	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("get icon id for %s: %w", item.IconURL, err)
-	}
-	iconsByKey[key] = id
-	return id, nil
-}
-
-func ensureIconMapping(ctx context.Context, tx *sql.Tx, mappings map[string]struct{}, pageID, iconID int64) error {
-	key := mappingKey(pageID, iconID)
-	if _, ok := mappings[key]; ok {
-		return nil
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO moz_icons_to_pages (page_id, icon_id, expire_ms)
-VALUES (?, ?, 0)
-`, pageID, iconID); err != nil {
-		return fmt.Errorf("insert icon mapping %d->%d: %w", pageID, iconID, err)
-	}
-	mappings[key] = struct{}{}
-	return nil
 }
 
 func ensureOriginForURL(ctx context.Context, tx *sql.Tx, origins map[originKey]int64, rawURL string) (int64, string, error) {
@@ -1043,18 +653,6 @@ func hashURL(spec string) uint64 {
 		return uint64(strHash)
 	}
 	return (prefixHash << 32) + uint64(strHash)
-}
-
-func iconKey(iconURL string, width int) string {
-	return fmt.Sprintf("%s\x00%d", iconURL, width)
-}
-
-func mappingKey(pageID, iconID int64) string {
-	return fmt.Sprintf("%d:%d", pageID, iconID)
-}
-
-func isRootIcon(iconURL string) bool {
-	return strings.HasSuffix(strings.ToLower(iconURL), "/favicon.ico")
 }
 
 func schemePrefix(spec string) string {

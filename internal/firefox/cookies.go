@@ -30,7 +30,7 @@ func ImportCookies(ctx context.Context, profileDir string, cookies []chromium.Co
 	}
 
 	cookiesPath := filepath.Join(profileDir, "cookies.sqlite")
-	if err := ensurePlacesWritable(cookiesPath); err != nil {
+	if err := ensureRegularFile(cookiesPath); err != nil {
 		return err
 	}
 
