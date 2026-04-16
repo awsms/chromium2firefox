@@ -8,19 +8,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"chromium2firefox/internal/chromium"
 	"chromium2firefox/internal/progress"
+	"github.com/google/uuid"
 )
 
 const (
 	searchMZLZ4File             = "search.json.mozlz4"
 	defaultMozLZ4Binary         = "mozlz4"
 	firefoxSearchSuggestionType = "application/x-suggestions+json"
-	firefoxSearchLoadPath       = "[other]/chromium2firefox"
+	firefoxSearchLoadPath       = "[user]"
 )
 
 type settingsFile struct {
@@ -79,7 +79,7 @@ func ImportSearchEngines(ctx context.Context, profileDir string, engines []chrom
 
 	existingIDs := make(map[string]struct{})
 	existingNames := make(map[string]struct{})
-	for _, raw := range settings.Engines {
+	for idx, raw := range settings.Engines {
 		var existing persistedEngine
 		if err := json.Unmarshal(raw, &existing); err != nil {
 			return fmt.Errorf("decode existing engine: %w", err)
@@ -88,17 +88,20 @@ func ImportSearchEngines(ctx context.Context, profileDir string, engines []chrom
 			existingIDs[existing.ID] = struct{}{}
 		}
 		if existing.Name != "" {
-			existingNames[strings.ToLower(existing.Name)] = struct{}{}
+			nameKey := strings.ToLower(existing.Name)
+			existingNames[nameKey] = struct{}{}
+			_ = idx
 		}
 	}
 
 	progressor := newStageProgress(reporter, importSize, int64(len(candidates)))
 	for _, engine := range candidates {
 		persisted := toPersistedEngine(engine)
+		nameKey := strings.ToLower(persisted.Name)
 		if _, ok := existingIDs[persisted.ID]; ok {
 			continue
 		}
-		if _, ok := existingNames[strings.ToLower(persisted.Name)]; ok {
+		if _, ok := existingNames[nameKey]; ok {
 			continue
 		}
 
@@ -108,7 +111,7 @@ func ImportSearchEngines(ctx context.Context, profileDir string, engines []chrom
 		}
 		settings.Engines = append(settings.Engines, raw)
 		existingIDs[persisted.ID] = struct{}{}
-		existingNames[strings.ToLower(persisted.Name)] = struct{}{}
+		existingNames[nameKey] = struct{}{}
 		progressor.Step(1)
 	}
 
@@ -196,12 +199,10 @@ func filterImportableEngines(engines []chromium.Engine) []chromium.Engine {
 
 func toPersistedEngine(engine chromium.Engine) persistedEngine {
 	out := persistedEngine{
-		ID:       firefoxEngineID(engine),
+		ID:       firefoxEngineID(),
 		Name:     strings.TrimSpace(engine.Name),
 		LoadPath: firefoxSearchLoadPath,
-		MetaData: map[string]any{
-			"user-installed": true,
-		},
+		MetaData: map[string]any{},
 		URLs: []persistedEngineURL{
 			{
 				Template: engine.SearchURL,
@@ -215,7 +216,7 @@ func toPersistedEngine(engine chromium.Engine) persistedEngine {
 		out.QueryCharset = engine.InputEncodings[0]
 	}
 	if engine.Keyword != "" {
-		out.DefinedAliases = []string{engine.Keyword}
+		out.MetaData["alias"] = engine.Keyword
 	}
 	if engine.FaviconURL != "" {
 		out.IconMap = map[string]string{"16": engine.FaviconURL}
@@ -232,8 +233,8 @@ func toPersistedEngine(engine chromium.Engine) persistedEngine {
 	return out
 }
 
-func firefoxEngineID(engine chromium.Engine) string {
-	return "chromium-" + strconv.FormatInt(engine.ID, 10)
+func firefoxEngineID() string {
+	return uuid.NewString()
 }
 
 func readSearchSettings(ctx context.Context, path string) (settingsFile, error) {

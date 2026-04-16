@@ -72,22 +72,28 @@ func TestImportSearchEnginesMergesCustomChromiumEngines(t *testing.T) {
 
 	var imported *persistedEngine
 	for i := range settings.Engines {
-		if settings.Engines[i].ID == "chromium-1" {
+		if settings.Engines[i].Name == "Discogs" {
 			imported = &settings.Engines[i]
 			break
 		}
 	}
 	if imported == nil {
-		t.Fatal("imported engine chromium-1 not found")
+		t.Fatal("imported engine Discogs not found")
 	}
 	if imported.Name != "Discogs" {
 		t.Fatalf("imported name = %q, want Discogs", imported.Name)
 	}
+	if imported.ID == "" || imported.ID == "chromium-1" {
+		t.Fatalf("engine id = %q, want generated firefox-style id", imported.ID)
+	}
 	if imported.LoadPath != firefoxSearchLoadPath {
 		t.Fatalf("load path = %q, want %q", imported.LoadPath, firefoxSearchLoadPath)
 	}
-	if len(imported.DefinedAliases) != 1 || imported.DefinedAliases[0] != "dis" {
-		t.Fatalf("aliases = %#v, want [\"dis\"]", imported.DefinedAliases)
+	if got := imported.MetaData["alias"]; got != "dis" {
+		t.Fatalf("metaData.alias = %#v, want %q", got, "dis")
+	}
+	if len(imported.DefinedAliases) != 0 {
+		t.Fatalf("defined aliases = %#v, want none", imported.DefinedAliases)
 	}
 	if got := imported.IconMap["16"]; got != "https://www.discogs.com/favicon.ico" {
 		t.Fatalf("icon = %q, want discogs favicon", got)
