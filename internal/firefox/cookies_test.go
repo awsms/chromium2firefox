@@ -159,6 +159,40 @@ WHERE host = '.unset.example' AND name = 'unsetcookie'
 	}
 }
 
+func TestReadCookies(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	profileDir := t.TempDir()
+	cookiesPath := filepath.Join(profileDir, "cookies.sqlite")
+
+	createFirefoxCookiesTestDB(t, cookiesPath)
+
+	cookies, err := ReadCookies(ctx, cookiesPath)
+	if err != nil {
+		t.Fatalf("ReadCookies() error = %v", err)
+	}
+
+	if len(cookies) == 0 {
+		t.Fatal("expected at least one cookie")
+	}
+
+	found := false
+	for _, c := range cookies {
+		if c.Name == "sessionid" {
+			found = true
+			// 1700000000 seconds -> 1700000000000 ms
+			if c.ExpiresUnixMillis != 1700000000000 {
+				t.Errorf("expiry = %d, want %d", c.ExpiresUnixMillis, 1700000000000)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("sessionid cookie not found")
+	}
+}
+
 func createFirefoxCookiesTestDB(t *testing.T, path string) {
 	t.Helper()
 

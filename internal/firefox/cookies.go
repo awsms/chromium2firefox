@@ -37,7 +37,7 @@ func ImportCookies(ctx context.Context, profileDir string, cookies []chromium.Co
 	if err := backupFile(cookiesPath, reporter); err != nil {
 		return fmt.Errorf("backup cookies.sqlite: %w", err)
 	}
-	importSize, finalizeSize := splitStageSize(sourceSize, 95)
+	importSize, finalizeSize := progress.SplitStageSize(sourceSize, 95)
 	if reporter != nil {
 		reporter.StartStage("importing", cookiesPath, importSize)
 	}
@@ -80,7 +80,7 @@ ON CONFLICT(name, host, path, originAttributes) DO UPDATE SET
 		return fmt.Errorf("prepare cookie upsert: %w", err)
 	}
 	defer stmt.Close()
-	progressor := newStageProgress(reporter, importSize, int64(len(cookies)))
+	progressor := progress.NewStageProgress(reporter, importSize, int64(len(cookies)))
 
 	for _, cookie := range cookies {
 		originAttrs, err := firefoxOriginAttributes(cookie.TopFrameSiteKey)
@@ -127,6 +127,90 @@ ON CONFLICT(name, host, path, originAttributes) DO UPDATE SET
 		reporter.FinishStage("finalizing", cookiesPath, finalizeSize)
 	}
 	return nil
+}
+
+func ReadCookies(ctx context.Context, cookiesPath string) ([]chromium.Cookie, error) {
+	db, err := sql.Open("sqlite", cookiesPath)
+	if err != nil {
+		return nil, fmt.Errorf("open firefox cookies database: %w", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
+		return nil, fmt.Errorf("set busy timeout: %w", err)
+	}
+
+	rows, err := db.QueryContext(ctx, `
+SELECT
+	name, value, host, path, expiry, lastAccessed, creationTime,
+	isSecure, isHttpOnly, sameSite, schemeMap
+FROM moz_cookies
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query firefox cookies: %w", err)
+	}
+	defer rows.Close()
+
+	var out []chromium.Cookie
+	for rows.Next() {
+		var (
+			item          chromium.Cookie
+			expirySeconds int64
+			isSecure      int
+			isHTTPOnly    int
+			sameSite      int
+			schemeMap     int
+		)
+		if err := rows.Scan(
+			&item.Name,
+			&item.Value,
+			&item.HostKey,
+			&item.Path,
+			&expirySeconds,
+			&item.LastAccessUnixMicros,
+			&item.CreationUnixMicros,
+			&isSecure,
+			&isHTTPOnly,
+			&sameSite,
+			&schemeMap,
+		); err != nil {
+			return nil, fmt.Errorf("scan firefox cookie: %w", err)
+		}
+
+		item.ExpiresUnixMillis = expirySeconds * 1000
+		item.IsSecure = isSecure != 0
+		item.IsHTTPOnly = isHTTPOnly != 0
+		item.SameSite = firefoxSameSiteToChromium(sameSite)
+		item.SourceScheme = firefoxSchemeToChromium(schemeMap)
+
+		out = append(out, item)
+	}
+
+	return out, rows.Err()
+}
+
+func firefoxSameSiteToChromium(sameSite int) int {
+	switch sameSite {
+	case firefoxSameSiteLax:
+		return 1
+	case firefoxSameSiteStrict:
+		return 2
+	case firefoxSameSiteNone:
+		return 0
+	default:
+		return 0
+	}
+}
+
+func firefoxSchemeToChromium(scheme int) int {
+	switch scheme {
+	case firefoxSchemeHTTP:
+		return 1
+	case firefoxSchemeHTTPS:
+		return 2
+	default:
+		return 0
+	}
 }
 
 func firefoxOriginAttributes(topFrameSiteKey string) (string, error) {

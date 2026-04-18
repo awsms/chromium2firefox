@@ -10,6 +10,7 @@ type Options struct {
 	Favicons bool
 	Cookies  bool
 	Search   bool
+	Reverse  bool
 }
 
 func DefaultOptions() Options {

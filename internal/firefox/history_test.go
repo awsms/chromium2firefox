@@ -86,8 +86,8 @@ WHERE url = 'https://mozilla.org/'
 	if err := db.QueryRow(`SELECT COUNT(*) FROM moz_historyvisits`).Scan(&visitCount); err != nil {
 		t.Fatalf("query visit count: %v", err)
 	}
-	if visitCount != 3 {
-		t.Fatalf("visit count = %d, want 3", visitCount)
+	if visitCount != 4 {
+		t.Fatalf("visit count = %d, want 4", visitCount)
 	}
 
 	var inputUseCount int
@@ -155,6 +155,39 @@ WHERE p.page_url = 'https://example.com/'
 	}
 }
 
+func TestReadHistory(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	profileDir := t.TempDir()
+	placesPath := filepath.Join(profileDir, "places.sqlite")
+
+	createFirefoxTestDB(t, placesPath)
+
+	dataset, err := ReadHistory(ctx, placesPath)
+	if err != nil {
+		t.Fatalf("ReadHistory() error = %v", err)
+	}
+
+	if len(dataset.URLs) == 0 {
+		t.Fatal("expected at least one URL")
+	}
+
+	found := false
+	for _, u := range dataset.URLs {
+		if u.URL == "https://mozilla.org/" {
+			found = true
+			if u.Title != "Mozilla" {
+				t.Errorf("title = %q, want %q", u.Title, "Mozilla")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("mozilla.org not found in history")
+	}
+}
+
 func createFirefoxTestDB(t *testing.T, path string) {
 	t.Helper()
 
@@ -214,18 +247,17 @@ func createFirefoxTestDB(t *testing.T, path string) {
 		 VALUES (1, 'https://', 'example.com', 1, 0, 0)`,
 		`INSERT INTO moz_places (
 			id, url, title, rev_host, visit_count, hidden, typed, frecency, last_visit_date,
-			guid, foreign_count, url_hash, origin_id, recalc_frecency, recalc_alt_frecency
-		)
-		VALUES (
-			1, 'https://example.com/', 'Example Existing', 'moc.elpmaxe.', 1, 0, 0, -1, 1710000000000000,
-			'EXISTINGGUID1', 0, 111, 1, 0, 0
-		)`,
-		`INSERT INTO moz_historyvisits (
-			id, from_visit, place_id, visit_date, visit_type, session, source, triggeringPlaceId
-		)
-		VALUES (1, NULL, 1, 1710000000000000, 1, 0, 0, NULL)`,
+			guid, url_hash, origin_id
+		) VALUES (1, 'https://example.com/', 'Example', 'moc.elpmaxe.', 1, 0, 0, 100, 1710000000000000, 'guid1', 123, 1)`,
+		`INSERT INTO moz_places (
+			id, url, title, rev_host, visit_count, hidden, typed, frecency, last_visit_date,
+			guid, url_hash, origin_id
+		) VALUES (2, 'https://mozilla.org/', 'Mozilla', 'gro.allizom.', 1, 0, 0, 100, 1710000000000000, 'guid2', 456, 1)`,
+		`INSERT INTO moz_historyvisits (id, place_id, visit_date, visit_type)
+		 VALUES (1, 1, 1710000000000000, 1)`,
+		`INSERT INTO moz_historyvisits (id, place_id, visit_date, visit_type)
+		 VALUES (2, 2, 1710000000000000, 1)`,
 	}
-
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("Exec(%q) error = %v", stmt, err)
@@ -242,8 +274,8 @@ func createChromiumTestDB(t *testing.T, path string) {
 	stmts := []string{
 		`CREATE TABLE urls (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			url LONGVARCHAR,
-			title LONGVARCHAR,
+			url TEXT,
+			title TEXT,
 			visit_count INTEGER DEFAULT 0 NOT NULL,
 			typed_count INTEGER DEFAULT 0 NOT NULL,
 			last_visit_time INTEGER NOT NULL,

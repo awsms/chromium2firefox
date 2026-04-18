@@ -65,7 +65,7 @@ func ImportSearchEngines(ctx context.Context, profileDir string, engines []chrom
 	if err := backupFile(settingsPath, reporter); err != nil {
 		return fmt.Errorf("backup %s: %w", searchMZLZ4File, err)
 	}
-	importSize, finalizeSize := splitStageSize(sourceSize, 90)
+	importSize, finalizeSize := progress.SplitStageSize(sourceSize, 90)
 	if reporter != nil {
 		reporter.StartStage("importing", settingsPath, importSize)
 	}
@@ -92,7 +92,7 @@ func ImportSearchEngines(ctx context.Context, profileDir string, engines []chrom
 		}
 	}
 
-	progressor := newStageProgress(reporter, importSize, int64(len(candidates)))
+	progressor := progress.NewStageProgress(reporter, importSize, int64(len(candidates)))
 	for _, engine := range candidates {
 		persisted := toPersistedEngine(engine)
 		nameKey := strings.ToLower(persisted.Name)
@@ -128,6 +128,52 @@ func ImportSearchEngines(ctx context.Context, profileDir string, engines []chrom
 		reporter.FinishStage("finalizing", settingsPath, finalizeSize)
 	}
 	return nil
+}
+
+func ReadSearchEngines(ctx context.Context, settingsPath string) ([]chromium.Engine, error) {
+	settings, err := readSearchSettings(ctx, settingsPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []chromium.Engine
+	for _, raw := range settings.Engines {
+		var engine persistedEngine
+		if err := json.Unmarshal(raw, &engine); err != nil {
+			return nil, fmt.Errorf("decode firefox engine: %w", err)
+		}
+
+		if len(engine.URLs) == 0 {
+			continue
+		}
+
+		item := chromium.Engine{
+			Name:     engine.Name,
+			IsActive: true,
+		}
+
+		if alias, ok := engine.MetaData["alias"].(string); ok {
+			item.Keyword = alias
+		}
+
+		for _, u := range engine.URLs {
+			if u.Type == "" || u.Type == "text/html" {
+				item.SearchURL = u.Template
+			} else if u.Type == firefoxSearchSuggestionType {
+				item.SuggestURL = u.Template
+			}
+		}
+
+		if iconURL, ok := engine.IconMap["16"]; ok {
+			item.FaviconURL = iconURL
+		}
+
+		if item.SearchURL != "" {
+			out = append(out, item)
+		}
+	}
+
+	return out, nil
 }
 
 func filterImportableEngines(engines []chromium.Engine) []chromium.Engine {

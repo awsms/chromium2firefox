@@ -1,49 +1,45 @@
-package firefox
+package progress
 
-import (
-	"io"
+import "io"
 
-	"chromium2firefox/internal/progress"
-)
-
-type progressReader struct {
-	reader   io.Reader
-	reporter progress.Sink
+type Reader struct {
+	reader io.Reader
+	sink   Sink
 }
 
-func newProgressReader(reader io.Reader, reporter progress.Sink) io.Reader {
-	if reporter == nil {
+func NewReader(reader io.Reader, sink Sink) io.Reader {
+	if sink == nil {
 		return reader
 	}
-	return &progressReader{reader: reader, reporter: reporter}
+	return &Reader{reader: reader, sink: sink}
 }
 
-func (r *progressReader) Read(p []byte) (int, error) {
+func (r *Reader) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
 	if n > 0 {
-		r.reporter.Advance(int64(n))
+		r.sink.Advance(int64(n))
 	}
 	return n, err
 }
 
-type stageProgress struct {
-	reporter progress.Sink
+type StageProgress struct {
+	sink     Sink
 	size     int64
 	total    int64
 	done     int64
 	reported int64
 }
 
-func newStageProgress(reporter progress.Sink, size, total int64) *stageProgress {
-	return &stageProgress{
-		reporter: reporter,
-		size:     size,
-		total:    total,
+func NewStageProgress(sink Sink, size, total int64) *StageProgress {
+	return &StageProgress{
+		sink:  sink,
+		size:  size,
+		total: total,
 	}
 }
 
-func (p *stageProgress) Step(units int64) {
-	if p == nil || p.reporter == nil || p.total <= 0 || units <= 0 {
+func (p *StageProgress) Step(units int64) {
+	if p == nil || p.sink == nil || p.total <= 0 || units <= 0 {
 		return
 	}
 	p.done += units
@@ -53,10 +49,10 @@ func (p *stageProgress) Step(units int64) {
 		return
 	}
 	p.reported = target
-	p.reporter.Advance(delta)
+	p.sink.Advance(delta)
 }
 
-func splitStageSize(total int64, importPercent int64) (int64, int64) {
+func SplitStageSize(total int64, importPercent int64) (int64, int64) {
 	if total <= 1 {
 		return 1, 1
 	}
@@ -78,7 +74,7 @@ func splitStageSize(total int64, importPercent int64) (int64, int64) {
 	return importSize, finalizeSize
 }
 
-func splitFinalizeSizes(total int64, firstPercent int64, secondPercent int64) (int64, int64, int64) {
+func SplitFinalizeSizes(total int64, firstPercent int64, secondPercent int64) (int64, int64, int64) {
 	if total <= 2 {
 		return 1, 1, 1
 	}

@@ -22,7 +22,52 @@ func newProfileReporter(firefoxProfileDir string, options Options, sourcePaths .
 	if options.Search {
 		targetPaths = append(targetPaths, filepath.Join(firefoxProfileDir, "search.json.mozlz4"))
 	}
+	return newReporter(targetPaths, sourcePaths)
+}
 
+func newChromiumProfileReporter(chromiumProfileDir string, options Options, sourcePaths ...string) (*progress.Reporter, error) {
+	var targetPaths []string
+	var err error
+
+	if options.History {
+		var path string
+		path, err = discoverRequiredChromiumFile(chromiumProfileDir, "History")
+		if err != nil {
+			return nil, err
+		}
+		targetPaths = append(targetPaths, path)
+	}
+	if options.Favicons {
+		path, err := discoverOptionalChromiumFile(chromiumProfileDir, "Favicons")
+		if err != nil {
+			return nil, err
+		}
+		if path != "" {
+			targetPaths = append(targetPaths, path)
+		}
+	}
+	if options.Cookies {
+		path, err := discoverOptionalChromiumFile(chromiumProfileDir, "Cookies")
+		if err != nil {
+			return nil, err
+		}
+		if path != "" {
+			targetPaths = append(targetPaths, path)
+		}
+	}
+	if options.Search {
+		path, err := discoverOptionalChromiumFile(chromiumProfileDir, "Web Data")
+		if err != nil {
+			return nil, err
+		}
+		if path != "" {
+			targetPaths = append(targetPaths, path)
+		}
+	}
+	return newReporter(targetPaths, sourcePaths)
+}
+
+func newReporter(targetPaths, sourcePaths []string) (*progress.Reporter, error) {
 	var total int64
 	for _, path := range targetPaths {
 		size, err := fileSize(path)
@@ -66,7 +111,7 @@ func discoverRequiredProfileFile(profileDir, name string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("chromium profile %s is missing %s", profileDir, name)
+			return "", fmt.Errorf("profile %s is missing %s", profileDir, name)
 		}
 		return "", fmt.Errorf("stat %s: %w", path, err)
 	}
@@ -92,4 +137,22 @@ func discoverOptionalProfileFile(profileDir, name string) (string, error) {
 		return "", nil
 	}
 	return path, nil
+}
+
+func discoverRequiredChromiumFile(profileDir, name string) (string, error) {
+	path := filepath.Join(profileDir, name)
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		return path, nil
+	}
+
+	return "", fmt.Errorf("chromium profile %s is missing %s", profileDir, name)
+}
+
+func discoverOptionalChromiumFile(profileDir, name string) (string, error) {
+	path := filepath.Join(profileDir, name)
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		return path, nil
+	}
+
+	return "", nil
 }

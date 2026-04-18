@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"chromium2firefox/internal/chromium"
 	"chromium2firefox/internal/progress"
@@ -68,7 +69,7 @@ func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Data
 	if err := backupFile(placesPath, reporter); err != nil {
 		return fmt.Errorf("backup places.sqlite: %w", err)
 	}
-	importSize, finalizeSize := splitStageSize(sourceSize, 90)
+	importSize, finalizeSize := progress.SplitStageSize(sourceSize, 90)
 	if reporter != nil {
 		reporter.StartStage("importing", placesPath, importSize)
 	}
@@ -109,7 +110,7 @@ func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Data
 
 	typedInputs := make(map[int64]int)
 	placeIDsByChromiumURL := make(map[int64]int64, len(dataset.URLs))
-	progressor := newStageProgress(reporter, importSize, int64(len(dataset.URLs)+len(dataset.Visits)))
+	progressor := progress.NewStageProgress(reporter, importSize, int64(len(dataset.URLs)+len(dataset.Visits)))
 	for _, page := range dataset.URLs {
 		placeID, err := ensurePlace(ctx, tx, originIDs, placesByURL, page)
 		if err != nil {
@@ -169,11 +170,11 @@ func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Data
 		reporter.FinishStage("importing", placesPath, importSize)
 	}
 
-	reconcileSize, inputHistorySize, commitSize := splitFinalizeSizes(finalizeSize, 35, 15)
+	reconcileSize, inputHistorySize, commitSize := progress.SplitFinalizeSizes(finalizeSize, 35, 15)
 	if reporter != nil {
 		reporter.StartStage("reconciling-metadata", placesPath, reconcileSize)
 	}
-	reconcileProgress := newStageProgress(reporter, reconcileSize, int64(len(placesByURL)))
+	reconcileProgress := progress.NewStageProgress(reporter, reconcileSize, int64(len(placesByURL)))
 	if err := reconcilePlaces(ctx, tx, placesByURL, reconcileProgress); err != nil {
 		return err
 	}
@@ -182,7 +183,7 @@ func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Data
 		reporter.StartStage("reconciling-inputhistory", placesPath, inputHistorySize)
 	}
 
-	inputHistoryProgress := newStageProgress(reporter, inputHistorySize, int64(len(typedInputs)))
+	inputHistoryProgress := progress.NewStageProgress(reporter, inputHistorySize, int64(len(typedInputs)))
 	if err := reconcileInputHistory(ctx, tx, typedInputs, inputHistoryProgress); err != nil {
 		return err
 	}
@@ -199,6 +200,117 @@ func ImportHistory(ctx context.Context, profileDir string, dataset chromium.Data
 	}
 
 	return nil
+}
+
+func ReadHistory(ctx context.Context, placesPath string) (chromium.Dataset, error) {
+	db, err := sql.Open("sqlite", placesPath)
+	if err != nil {
+		return chromium.Dataset{}, fmt.Errorf("open firefox places database: %w", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
+		return chromium.Dataset{}, fmt.Errorf("set busy timeout: %w", err)
+	}
+
+	urls, err := readURLs(ctx, db)
+	if err != nil {
+		return chromium.Dataset{}, err
+	}
+
+	visits, err := readVisits(ctx, db)
+	if err != nil {
+		return chromium.Dataset{}, err
+	}
+
+	return chromium.Dataset{
+		URLs:   urls,
+		Visits: visits,
+	}, nil
+}
+
+func readURLs(ctx context.Context, db *sql.DB) ([]chromium.URL, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT id, url, COALESCE(title, ''), visit_count, COALESCE(last_visit_date, 0), hidden, typed
+FROM moz_places
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query firefox places: %w", err)
+	}
+	defer rows.Close()
+
+	var urls []chromium.URL
+	for rows.Next() {
+		var (
+			url           chromium.URL
+			lastVisitDate int64
+			hidden        int
+			typed         int
+		)
+		if err := rows.Scan(&url.ID, &url.URL, &url.Title, &url.VisitCount, &lastVisitDate, &hidden, &typed); err != nil {
+			return nil, fmt.Errorf("scan firefox place: %w", err)
+		}
+		url.LastVisitTime = time.UnixMicro(lastVisitDate).UTC()
+		url.Hidden = hidden != 0
+		if typed != 0 {
+			url.TypedCount = 1 // Best effort, Firefox doesn't store full typed count in moz_places the same way
+		}
+		urls = append(urls, url)
+	}
+
+	return urls, rows.Err()
+}
+
+func readVisits(ctx context.Context, db *sql.DB) ([]chromium.Visit, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT id, place_id, visit_date, visit_type, COALESCE(from_visit, 0)
+FROM moz_historyvisits
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query firefox visits: %w", err)
+	}
+	defer rows.Close()
+
+	var visits []chromium.Visit
+	for rows.Next() {
+		var (
+			visit     chromium.Visit
+			visitDate int64
+		)
+		if err := rows.Scan(&visit.ID, &visit.URLID, &visitDate, &visit.Transition, &visit.FromVisitID); err != nil {
+			return nil, fmt.Errorf("scan firefox visit: %w", err)
+		}
+		visit.VisitTime = time.UnixMicro(visitDate).UTC()
+		visit.Transition = firefoxTransitionToChromium(visit.Transition)
+		visits = append(visits, visit)
+	}
+
+	return visits, rows.Err()
+}
+
+func firefoxTransitionToChromium(transition int) int {
+	switch transition {
+	case firefoxTransitionLink:
+		return 0 // LINK
+	case firefoxTransitionTyped:
+		return 1 // TYPED
+	case firefoxTransitionBookmark:
+		return 2 // AUTO_BOOKMARK
+	case firefoxTransitionEmbed:
+		return 3 // AUTO_SUBFRAME
+	case firefoxTransitionRedirectPerm:
+		return 0x80000000 // SERVER_REDIRECT
+	case firefoxTransitionRedirectTemp:
+		return 0x80000000 // SERVER_REDIRECT
+	case firefoxTransitionDownload:
+		return 0 // LINK
+	case firefoxTransitionFramedLink:
+		return 4 // MANUAL_SUBFRAME
+	case firefoxTransitionReload:
+		return 8 // RELOAD
+	default:
+		return 0
+	}
 }
 
 func loadOrigins(ctx context.Context, tx *sql.Tx) (map[originKey]int64, error) {
@@ -485,7 +597,7 @@ VALUES (?, ?, ?, ?, 0, 0, ?)
 	return id, nil
 }
 
-func reconcilePlaces(ctx context.Context, tx *sql.Tx, placesByURL map[string]*placeState, progressor *stageProgress) error {
+func reconcilePlaces(ctx context.Context, tx *sql.Tx, placesByURL map[string]*placeState, progressor *progress.StageProgress) error {
 	stmt, err := tx.PrepareContext(ctx, `
 UPDATE moz_places
 SET
@@ -528,7 +640,7 @@ WHERE id = ?
 	return nil
 }
 
-func reconcileInputHistory(ctx context.Context, tx *sql.Tx, typedInputs map[int64]int, progressor *stageProgress) error {
+func reconcileInputHistory(ctx context.Context, tx *sql.Tx, typedInputs map[int64]int, progressor *progress.StageProgress) error {
 	stmt, err := tx.PrepareContext(ctx, `
 INSERT INTO moz_inputhistory (place_id, input, use_count)
 VALUES (?, ?, ?)

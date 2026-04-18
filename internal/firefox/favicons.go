@@ -26,11 +26,11 @@ func ImportFavicons(ctx context.Context, profileDir string, favicons []chromium.
 	if err := backupFile(faviconsPath, reporter); err != nil {
 		return fmt.Errorf("backup favicons.sqlite: %w", err)
 	}
-	importSize, finalizeSize := splitStageSize(sourceSize, 95)
+	importSize, finalizeSize := progress.SplitStageSize(sourceSize, 95)
 	if reporter != nil {
 		reporter.StartStage("importing", faviconsPath, importSize)
 	}
-	progressor := newStageProgress(reporter, importSize, int64(len(favicons)))
+	progressor := progress.NewStageProgress(reporter, importSize, int64(len(favicons)))
 
 	db, err := sql.Open("sqlite", faviconsPath)
 	if err != nil {
@@ -91,6 +91,49 @@ func ImportFavicons(ctx context.Context, profileDir string, favicons []chromium.
 	}
 
 	return nil
+}
+
+func ReadFavicons(ctx context.Context, faviconsPath string) ([]chromium.Favicon, error) {
+	db, err := sql.Open("sqlite", faviconsPath)
+	if err != nil {
+		return nil, fmt.Errorf("open firefox favicons database: %w", err)
+	}
+	defer db.Close()
+
+	rows, err := db.QueryContext(ctx, `
+SELECT
+	p.page_url,
+	i.icon_url,
+	i.width,
+	i.expire_ms,
+	i.data
+FROM moz_pages_w_icons p
+JOIN moz_icons_to_pages m ON m.page_id = p.id
+JOIN moz_icons i ON i.id = m.icon_id
+WHERE i.data IS NOT NULL
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query firefox favicons: %w", err)
+	}
+	defer rows.Close()
+
+	var out []chromium.Favicon
+	for rows.Next() {
+		var item chromium.Favicon
+		if err := rows.Scan(
+			&item.PageURL,
+			&item.IconURL,
+			&item.Width,
+			&item.LastUpdated,
+			&item.ImageData,
+		); err != nil {
+			return nil, fmt.Errorf("scan firefox favicon: %w", err)
+		}
+		item.Height = item.Width
+		out = append(out, item)
+	}
+
+	return out, rows.Err()
 }
 
 func loadPagesWithIcons(ctx context.Context, tx *sql.Tx) (map[string]int64, error) {

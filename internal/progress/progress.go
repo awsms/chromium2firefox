@@ -26,7 +26,6 @@ type Reporter struct {
 	out          io.Writer
 	total        int64
 	done         int64
-	startedAt    time.Time
 	stageSize    int64
 	stageDone    int64
 	stageDesc    string
@@ -38,9 +37,8 @@ type Reporter struct {
 
 func New(out io.Writer, total int64) *Reporter {
 	return &Reporter{
-		out:       out,
-		total:     total,
-		startedAt: time.Now(),
+		out:   out,
+		total: total,
 	}
 }
 

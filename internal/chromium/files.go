@@ -1,4 +1,4 @@
-package firefox
+package chromium
 
 import (
 	"fmt"
@@ -35,10 +35,20 @@ func backupFile(path string, reporter progress.Sink) error {
 		reporter.StartStage("backing up", path, info.Size())
 	}
 
-	backupPath := fmt.Sprintf("%s.chromium2firefox.%s.bak", path, time.Now().UTC().Format("20060102T150405Z"))
-	dst, err := os.OpenFile(backupPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
+	var dst *os.File
+	for attempt := 0; ; attempt++ {
+		suffix := time.Now().UTC().Format("20060102T150405.000000000Z")
+		if attempt > 0 {
+			suffix = fmt.Sprintf("%s.%d", suffix, attempt)
+		}
+		backupPath := fmt.Sprintf("%s.chromium2firefox.%s.bak", path, suffix)
+		dst, err = os.OpenFile(backupPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			break
+		}
+		if !os.IsExist(err) {
+			return err
+		}
 	}
 	defer dst.Close()
 
