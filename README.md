@@ -1,57 +1,69 @@
-# chromium2firefox
+# chromium2firefox(2chromium2floorp2brave2zen2ungoogled-chromium)
 
-`chromium2firefox` is a Go utility for migrating browser data from Chromium-based browsers into Firefox profiles. only tested on Linux.
+`chromium2firefox` is a Go utility for migrating browser data between Chromium-based browsers and Firefox-based browsers. only tested on Linux.
 
 plz close both browsers before trying to run the tool.
 
-for now, it can export Chromium data into Firefox by merging:
-- URLs
-- visits
-- titles
-- typed/hidden flags
-- origin rows
+for now, it can merge data in both directions:
+- Chromium-based browser profile => Firefox-based browser profile
+- Firefox-based browser profile => Chromium-based browser profile
+
+that means it can do regular Chromium => zen-browser, Floorp => ungoogled-chromium, etc. haven't tested standard Chrome & Firefox though.
+
+currently it can merge:
+- History (visited sites & count)
 - favicons
 - cookies
-- search engines from `Web Data` into `search.json.mozlz4`
+- custom search engines
 
 ## Usage
 
 ```bash
 go run ./cmd/chromium2firefox \
-  -chromium-profile /path/to/chromium/profile \
-  -firefox-profile /path/to/firefox/profile
+  --chromium-profile /path/to/chromium/profile \
+  --firefox-profile /path/to/firefox/profile
 ```
 
-Chromium profile is expected to contain `History`. `Favicons`, `Cookies`, and `Web Data` are imported too when those files exist and are non-empty in the same profile directory.
+By default this imports Chromium => Firefox.
 
-To import only one category, use `-only`:
+To import Firefox => Chromium, add `--reverse`:
+
+```bash
+go run ./cmd/chromium2firefox \
+  --reverse \
+  --firefox-profile /path/to/firefox/profile \
+  --chromium-profile /path/to/chromium/profile
+```
+
+Chromium profiles are expected to contain `History`. `Favicons`, `Cookies`, and `Web Data` are imported too when those files exist and are non-empty in the same profile directory.
+
+Firefox profiles are expected to contain `places.sqlite`. `favicons.sqlite`, `cookies.sqlite`, and `search.json.mozlz4` are imported too when those files exist and are non-empty in the same profile directory.
+
+To import only one category, use `--only`:
 
 ```bash
 go run ./cmd/chromium2firefox \
   -chromium-profile /path/to/chromium/profile \
   -firefox-profile /path/to/firefox/profile \
-  -only search
+  --only search
 ```
 
-Supported `-only` values:
+Supported `--only` values:
 - `history`
 - `favicons`
 - `cookies`
 - `search`
 
-You can combine them with commas, for example `-only history,favicons`.
+You can combine them with commas, for example `--only history,favicons`.
 
-search engine import is conservative for the first pass:
-- it reads Chromium engines from the `keywords` table
-- it only imports active engines with `{searchTerms}` in the search URL
-- it skips POST-based engines for now
-- it avoids clobbering Firefox engines with the same persisted name or id
-- it shells out to the `mozlz4` command, so [`mozlz4`](https://github.com/jusw85/mozlz4) must be installed in `PATH`
+for the search engine import, it shells out to the `mozlz4` command, so [`mozlz4`](https://github.com/jusw85/mozlz4) must be installed in `PATH` if you want to import them.
 
 ## TODO
 
 - [ ] attempt to export extensions settings (hopium)
 - [ ] attempt to export leveldb-backed site storage
+- [ ] support Firefox-based browser profile => Firefox-based browser profile merges too, eg. Waterfox => Floorp
+- [ ] support Chromium-based browser profile => Chromium-based browser profile merges too, eg. ungoogled-chromium => Brave
 
 ## Not planned
 
