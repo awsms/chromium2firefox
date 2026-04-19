@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"chromium2firefox/internal/converter"
+	"github.com/awsms/chromium2firefox/internal/converter"
 
 	"github.com/spf13/cobra"
 )
@@ -51,7 +51,7 @@ Use --reverse to import from Firefox to Chromium.`,
 		Use:   "version",
 		Short: "Print the version number",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("chromium2firefox v0.2.0")
+			fmt.Println("chromium2firefox v1.0.0")
 		},
 	})
 

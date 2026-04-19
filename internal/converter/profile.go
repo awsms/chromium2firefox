@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"chromium2firefox/internal/chromium"
-	"chromium2firefox/internal/firefox"
+	"github.com/awsms/chromium2firefox/internal/chromium"
+	"github.com/awsms/chromium2firefox/internal/firefox"
 )
 
 func ConvertProfile(ctx context.Context, chromiumProfileDir, firefoxProfileDir string, options Options) error {

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"chromium2firefox/internal/chromium"
+	"github.com/awsms/chromium2firefox/internal/chromium"
 
 	_ "modernc.org/sqlite"
 )

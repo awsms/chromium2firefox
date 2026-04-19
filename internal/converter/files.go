@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"chromium2firefox/internal/progress"
+	"github.com/awsms/chromium2firefox/internal/progress"
 )
 
 func newProfileReporter(firefoxProfileDir string, options Options, sourcePaths ...string) (*progress.Reporter, error) {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"chromium2firefox/internal/progress"
+	"github.com/awsms/chromium2firefox/internal/progress"
 
 	_ "modernc.org/sqlite"
 )

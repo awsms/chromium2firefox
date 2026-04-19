@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"chromium2firefox/internal/chromium"
+	"github.com/awsms/chromium2firefox/internal/chromium"
 )
 
 func TestImportSearchEnginesMergesCustomChromiumEngines(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"chromium2firefox/internal/chromium"
-	"chromium2firefox/internal/progress"
+	"github.com/awsms/chromium2firefox/internal/chromium"
+	"github.com/awsms/chromium2firefox/internal/progress"
 	"github.com/google/uuid"
 )
 
