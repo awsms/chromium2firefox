@@ -25,20 +25,24 @@ const (
 )
 
 type Cookie struct {
-	HostKey              string
-	TopFrameSiteKey      string
-	Name                 string
-	Value                string
-	Path                 string
-	ExpiresUnixMillis    int64
-	LastAccessUnixMicros int64
-	CreationUnixMicros   int64
-	UpdateUnixMicros     int64
-	IsSecure             bool
-	IsHTTPOnly           bool
-	SameSite             int
-	SourceScheme         int
-	IsPartitioned        bool
+	HostKey               string
+	TopFrameSiteKey       string
+	Name                  string
+	Value                 string
+	Path                  string
+	ExpiresUnixMillis     int64
+	LastAccessUnixMicros  int64
+	CreationUnixMicros    int64
+	UpdateUnixMicros      int64
+	IsSecure              bool
+	IsHTTPOnly            bool
+	SameSite              int
+	SourceScheme          int
+	SourcePort            int
+	SourceType            int
+	Priority              int
+	HasCrossSiteAncestor int
+	IsPartitioned         bool
 }
 
 // ReadCookies extracts all cookies from a Chromium-based browser's database.
@@ -55,27 +59,34 @@ func ReadCookies(ctx context.Context, cookiesPath string) ([]Cookie, error) {
 		return nil, err
 	}
 
-	rows, err := db.QueryContext(ctx, `
-SELECT
-	host_key,
-	top_frame_site_key,
-	name,
-	value,
-	encrypted_value,
-	path,
-	expires_utc,
-	last_access_utc,
-	creation_utc,
-	last_update_utc,
-	is_secure,
-	is_httponly,
-	samesite,
-	source_scheme,
-	has_expires,
-	is_persistent
-FROM cookies
-ORDER BY last_access_utc ASC
-`)
+	columns, err := getTableColumns(ctx, db, "cookies")
+	if err != nil {
+		return nil, err
+	}
+
+	queryCols := []string{
+		"host_key", "name", "value", "encrypted_value", "path",
+		"expires_utc", "last_access_utc", "creation_utc", "last_update_utc",
+		"is_secure", "is_httponly", "samesite", "source_scheme",
+		"has_expires", "is_persistent",
+	}
+	if columns["top_frame_site_key"] {
+		queryCols = append(queryCols, "top_frame_site_key")
+	}
+	if columns["source_port"] {
+		queryCols = append(queryCols, "source_port")
+	}
+	if columns["priority"] {
+		queryCols = append(queryCols, "priority")
+	}
+	if columns["source_type"] {
+		queryCols = append(queryCols, "source_type")
+	}
+	if columns["has_cross_site_ancestor"] {
+		queryCols = append(queryCols, "has_cross_site_ancestor")
+	}
+
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT %s FROM cookies ORDER BY last_access_utc ASC", strings.Join(queryCols, ", ")))
 	if err != nil {
 		return nil, fmt.Errorf("query cookies: %w", err)
 	}
@@ -95,24 +106,30 @@ ORDER BY last_access_utc ASC
 			hasExpires     int
 			isPersistent   int
 		)
-		if err := rows.Scan(
-			&item.HostKey,
-			&item.TopFrameSiteKey,
-			&item.Name,
-			&plaintextValue,
-			&encryptedValue,
-			&item.Path,
-			&item.ExpiresUnixMillis,
-			&item.LastAccessUnixMicros,
-			&item.CreationUnixMicros,
-			&item.UpdateUnixMicros,
-			&isSecure,
-			&isHTTPOnly,
-			&item.SameSite,
-			&item.SourceScheme,
-			&hasExpires,
-			&isPersistent,
-		); err != nil {
+
+		dest := []any{
+			&item.HostKey, &item.Name, &plaintextValue, &encryptedValue, &item.Path,
+			&item.ExpiresUnixMillis, &item.LastAccessUnixMicros, &item.CreationUnixMicros, &item.UpdateUnixMicros,
+			&isSecure, &isHTTPOnly, &item.SameSite, &item.SourceScheme,
+			&hasExpires, &isPersistent,
+		}
+		if columns["top_frame_site_key"] {
+			dest = append(dest, &item.TopFrameSiteKey)
+		}
+		if columns["source_port"] {
+			dest = append(dest, &item.SourcePort)
+		}
+		if columns["priority"] {
+			dest = append(dest, &item.Priority)
+		}
+		if columns["source_type"] {
+			dest = append(dest, &item.SourceType)
+		}
+		if columns["has_cross_site_ancestor"] {
+			dest = append(dest, &item.HasCrossSiteAncestor)
+		}
+
+		if err := rows.Scan(dest...); err != nil {
 			return nil, fmt.Errorf("scan cookie row: %w", err)
 		}
 
@@ -154,6 +171,19 @@ func ImportCookies(ctx context.Context, cookiesPath string, cookies []Cookie, so
 	if len(cookies) == 0 {
 		return nil
 	}
+
+	// Deduplicate source cookies: keep only the latest one for each identity
+	type cookieIdentity struct {
+		host, name, path, topFrame string
+	}
+	deduped := make(map[cookieIdentity]Cookie)
+	for _, c := range cookies {
+		id := cookieIdentity{c.HostKey, c.Name, c.Path, c.TopFrameSiteKey}
+		if existing, ok := deduped[id]; !ok || c.LastAccessUnixMicros > existing.LastAccessUnixMicros {
+			deduped[id] = c
+		}
+	}
+
 	if err := ensureRegularFile(cookiesPath); err != nil {
 		return err
 	}
@@ -196,53 +226,8 @@ func ImportCookies(ctx context.Context, cookiesPath string, cookies []Cookie, so
 	}
 	defer tx.Rollback()
 
-	// Pre-load existing cookie keys to prevent duplicates when schema lacks UNIQUE constraints
-	type cookieKey struct {
-		host, name, path, topFrame string
-		scheme, port, ancestor     int
-	}
-	cookieCache := make(map[cookieKey]bool)
-
-	queryCols := []string{"host_key", "name", "path"}
-	if columns["top_frame_site_key"] {
-		queryCols = append(queryCols, "top_frame_site_key")
-	}
-	if columns["source_scheme"] {
-		queryCols = append(queryCols, "source_scheme")
-	}
-	if columns["source_port"] {
-		queryCols = append(queryCols, "source_port")
-	}
-	if columns["has_cross_site_ancestor"] {
-		queryCols = append(queryCols, "has_cross_site_ancestor")
-	}
-
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf("SELECT %s FROM cookies", strings.Join(queryCols, ", ")))
-	if err == nil {
-		for rows.Next() {
-			var k cookieKey
-			dest := []any{&k.host, &k.name, &k.path}
-			if columns["top_frame_site_key"] {
-				dest = append(dest, &k.topFrame)
-			}
-			if columns["source_scheme"] {
-				dest = append(dest, &k.scheme)
-			}
-			if columns["source_port"] {
-				dest = append(dest, &k.port)
-			}
-			if columns["has_cross_site_ancestor"] {
-				dest = append(dest, &k.ancestor)
-			}
-			if err := rows.Scan(dest...); err == nil {
-				cookieCache[k] = true
-			}
-		}
-		rows.Close()
-	}
-
-	progressor := progress.NewStageProgress(reporter, importSize, int64(len(cookies)))
-	for _, cookie := range cookies {
+	progressor := progress.NewStageProgress(reporter, importSize, int64(len(deduped)))
+	for _, cookie := range deduped {
 		encrypted, err := encryptCookieValue(cookie.HostKey, cookie.Value, hasDomainHashPrefix, v11Password, v11PasswordErr)
 		if err != nil {
 			return fmt.Errorf("encrypt cookie %s: %w", cookie.Name, err)
@@ -253,37 +238,24 @@ func ImportCookies(ctx context.Context, cookiesPath string, cookies []Cookie, so
 			hasExpires = 1
 		}
 
-		port := cookie.SourceScheme // default fallback
-		if columns["source_port"] {
-			port = 80
-			if cookie.IsSecure {
-				port = 443
-			}
+		// 1. Aggressive Cleanup: Delete ANY existing cookies matching the primary identity.
+		// We ignore source_port, source_scheme, and has_cross_site_ancestor in the cleanup
+		// to ensure we don't leave any browser-perceived duplicates behind.
+		deleteQuery := "DELETE FROM cookies WHERE host_key = ? AND name = ? AND path = ?"
+		deleteArgs := []any{cookie.HostKey, cookie.Name, cookie.Path}
+		if columns["top_frame_site_key"] {
+			deleteQuery += " AND top_frame_site_key = ?"
+			deleteArgs = append(deleteArgs, cookie.TopFrameSiteKey)
+		}
+		if _, err := tx.ExecContext(ctx, deleteQuery, deleteArgs...); err != nil {
+			return fmt.Errorf("cleanup existing cookie %s: %w", cookie.Name, err)
 		}
 
-		k := cookieKey{
-			host:     cookie.HostKey,
-			name:     cookie.Name,
-			path:     cookie.Path,
-			topFrame: cookie.TopFrameSiteKey,
-			scheme:   cookie.SourceScheme,
-			port:     port,
-			ancestor: 0,
-		}
-
-		if cookieCache[k] {
-			query, args := buildUpdateCookieQuery(cookie, encrypted, hasExpires, columns)
-			_, err = tx.ExecContext(ctx, query, args...)
-			if err != nil {
-				return fmt.Errorf("update cookie %s: %w", cookie.Name, err)
-			}
-		} else {
-			query, args := buildInsertCookieQuery(cookie, encrypted, hasExpires, columns)
-			_, err = tx.ExecContext(ctx, query, args...)
-			if err != nil {
-				return fmt.Errorf("insert cookie %s: %w", cookie.Name, err)
-			}
-			cookieCache[k] = true
+		// 2. Insert the fresh cookie with full fidelity
+		query, args := buildInsertCookieQuery(cookie, encrypted, hasExpires, columns)
+		_, err = tx.ExecContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("insert cookie %s: %w", cookie.Name, err)
 		}
 		progressor.Step(1)
 	}
@@ -362,9 +334,12 @@ func buildInsertCookieQuery(cookie Cookie, encrypted []byte, hasExpires int, col
 	}
 	if columns["source_port"] {
 		cols = append(cols, "source_port")
-		port := 80
-		if cookie.IsSecure {
-			port = 443
+		port := cookie.SourcePort
+		if port == 0 {
+			port = 80
+			if cookie.IsSecure {
+				port = 443
+			}
 		}
 		args = append(args, port)
 	}
@@ -374,15 +349,15 @@ func buildInsertCookieQuery(cookie Cookie, encrypted []byte, hasExpires int, col
 	}
 	if columns["priority"] {
 		cols = append(cols, "priority")
-		args = append(args, 1)
+		args = append(args, cookie.Priority)
 	}
 	if columns["source_type"] {
 		cols = append(cols, "source_type")
-		args = append(args, 0)
+		args = append(args, cookie.SourceType)
 	}
 	if columns["has_cross_site_ancestor"] {
 		cols = append(cols, "has_cross_site_ancestor")
-		args = append(args, 0)
+		args = append(args, cookie.HasCrossSiteAncestor)
 	}
 
 	placeholders := make([]string, len(cols))

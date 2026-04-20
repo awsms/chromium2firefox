@@ -30,7 +30,7 @@ func TestImportCookies(t *testing.T) {
 		t.Fatalf("ImportCookies() error = %v", err)
 	}
 
-	// Test update logic
+	// Test update logic: changing value should not create duplicates
 	cookies[0].Value = "updated-value"
 	if err := ImportCookies(ctx, cookiesPath, cookies, 1024, nil); err != nil {
 		t.Fatalf("ImportCookies(Update) error = %v", err)
@@ -66,6 +66,105 @@ func TestImportCookies(t *testing.T) {
 
 	if decrypted != "updated-value" {
 		t.Errorf("decrypted value = %q, want %q", decrypted, "updated-value")
+	}
+}
+
+func TestImportCookiesDeduplication(t *testing.T) {
+	ctx := context.Background()
+	chromiumDir := t.TempDir()
+	cookiesPath := filepath.Join(chromiumDir, "Cookies_Dedup")
+
+	createChromiumCookiesEmptyDB(t, cookiesPath)
+
+	// Simulate source data having duplicates
+	cookies := []Cookie{
+		{
+			HostKey:              ".example.com",
+			Name:                 "session",
+			Value:                "old-value",
+			Path:                 "/",
+			LastAccessUnixMicros: 100,
+		},
+		{
+			HostKey:              ".example.com",
+			Name:                 "session",
+			Value:                "new-value",
+			Path:                 "/",
+			LastAccessUnixMicros: 200, // Newer
+		},
+	}
+
+	if err := ImportCookies(ctx, cookiesPath, cookies, 1024, nil); err != nil {
+		t.Fatalf("ImportCookies() error = %v", err)
+	}
+
+	db, _ := sql.Open("sqlite", cookiesPath)
+	defer db.Close()
+
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM cookies WHERE host_key = '.example.com' AND name = 'session'").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected 1 row after importing source duplicates, got %d", count)
+	}
+
+	var encryptedValue []byte
+	db.QueryRow("SELECT encrypted_value FROM cookies WHERE name = 'session'").Scan(&encryptedValue)
+	v11Password, v11PasswordErr := lookupV11Password(ctx, cookiesPath)
+	decrypted, _ := decryptCookieValue(".example.com", encryptedValue, false, v11Password, v11PasswordErr)
+	if decrypted != "new-value" {
+		t.Errorf("expected newest source value 'new-value', got %q", decrypted)
+	}
+}
+
+func TestCookieUpsertScenario(t *testing.T) {
+	ctx := context.Background()
+	chromiumDir := t.TempDir()
+	cookiesPath := filepath.Join(chromiumDir, "Cookies_Upsert")
+
+	createChromiumCookiesEmptyDB(t, cookiesPath)
+
+	// 1. Manually insert an initial cookie with different secondary flags
+	db, err := sql.Open("sqlite", cookiesPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO cookies (host_key, name, value, encrypted_value, path, creation_utc, expires_utc, last_access_utc, is_secure, is_httponly, has_expires, is_persistent, source_port, has_cross_site_ancestor) 
+		VALUES ('.upsert.com', 'session', 'old-value', x'00', '/', 0, 0, 0, 0, 0, 0, 0, 80, 1)`)
+	db.Close()
+	if err != nil {
+		t.Fatalf("manual insert error = %v", err)
+	}
+
+	// 2. Import the same cookie with different flags (ancestor=0, port=443)
+	cookies := []Cookie{
+		{
+			HostKey:               ".upsert.com",
+			Name:                  "session",
+			Value:                 "new-value",
+			Path:                  "/",
+			HasCrossSiteAncestor: 0,
+			SourcePort:            443,
+			IsSecure:              true,
+		},
+	}
+
+	if err := ImportCookies(ctx, cookiesPath, cookies, 1024, nil); err != nil {
+		t.Fatalf("ImportCookies() error = %v", err)
+	}
+
+	// 3. Verify it was cleaned up and only the new one exists
+	db, _ = sql.Open("sqlite", cookiesPath)
+	defer db.Close()
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM cookies WHERE host_key = '.upsert.com' AND name = 'session'").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected 1 cookie row, got %d (cleanup failed!)", count)
+	}
+
+	var port int
+	db.QueryRow("SELECT source_port FROM cookies WHERE name = 'session'").Scan(&port)
+	if port != 443 {
+		t.Errorf("expected port 443 from new cookie, got %d", port)
 	}
 }
 
@@ -112,57 +211,6 @@ func TestImportCookiesDynamicColumns(t *testing.T) {
 	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM cookies WHERE name = 'minimal-cookie')").Scan(&exists)
 	if err != nil || !exists {
 		t.Errorf("cookie was not imported into minimal db")
-	}
-}
-
-func TestCookieUpsertScenario(t *testing.T) {
-	ctx := context.Background()
-	chromiumDir := t.TempDir()
-	cookiesPath := filepath.Join(chromiumDir, "Cookies_Upsert")
-
-	createChromiumCookiesEmptyDB(t, cookiesPath)
-
-	// 1. Manually insert an initial cookie
-	db, err := sql.Open("sqlite", cookiesPath)
-	if err != nil {
-		t.Fatalf("sql.Open() error = %v", err)
-	}
-	_, err = db.Exec(`INSERT INTO cookies (host_key, name, value, encrypted_value, path, creation_utc, expires_utc, last_access_utc, is_secure, is_httponly, has_expires, is_persistent, source_port) 
-		VALUES ('.upsert.com', 'session', 'old-value', x'00', '/', 0, 0, 0, 0, 0, 0, 0, 80)`)
-	db.Close()
-	if err != nil {
-		t.Fatalf("manual insert error = %v", err)
-	}
-
-	// 2. Import the same cookie with a new value
-	cookies := []Cookie{
-		{
-			HostKey: ".upsert.com",
-			Name:    "session",
-			Value:   "new-value",
-			Path:    "/",
-		},
-	}
-
-	if err := ImportCookies(ctx, cookiesPath, cookies, 1024, nil); err != nil {
-		t.Fatalf("ImportCookies() error = %v", err)
-	}
-
-	// 3. Verify it was updated and NOT duplicated
-	db, _ = sql.Open("sqlite", cookiesPath)
-	defer db.Close()
-	var count int
-	db.QueryRow("SELECT COUNT(*) FROM cookies WHERE host_key = '.upsert.com' AND name = 'session'").Scan(&count)
-	if count != 1 {
-		t.Errorf("expected 1 cookie row, got %d (duplication error)", count)
-	}
-
-	var encryptedValue []byte
-	db.QueryRow("SELECT encrypted_value FROM cookies WHERE name = 'session'").Scan(&encryptedValue)
-	v11Password, v11PasswordErr := lookupV11Password(ctx, cookiesPath)
-	decrypted, _ := decryptCookieValue(".upsert.com", encryptedValue, false, v11Password, v11PasswordErr)
-	if decrypted != "new-value" {
-		t.Errorf("expected new-value, got %q", decrypted)
 	}
 }
 
