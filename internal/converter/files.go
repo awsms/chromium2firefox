@@ -158,6 +158,14 @@ func discoverOptionalProfileDir(profileDir, name string) (string, error) {
 }
 
 
+func discoverOptionalProfileEntry(profileDir, name string) (string, error) {
+	path := filepath.Join(profileDir, name)
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
+	return "", nil
+}
+
 func discoverRequiredProfileFile(profileDir, name string) (string, error) {
 	path := filepath.Join(profileDir, name)
 	info, err := os.Stat(path)

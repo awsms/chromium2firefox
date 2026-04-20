@@ -34,14 +34,14 @@ func DetectProfileType(dir string) ProfileType {
 
 	chromiumCount := 0
 	for _, name := range chromiumFiles {
-		if path, _ := discoverOptionalProfileFile(dir, name); path != "" {
+		if path, _ := discoverOptionalProfileEntry(dir, name); path != "" {
 			chromiumCount++
 		}
 	}
 
 	firefoxCount := 0
 	for _, name := range firefoxFiles {
-		if path, _ := discoverOptionalProfileFile(dir, name); path != "" {
+		if path, _ := discoverOptionalProfileEntry(dir, name); path != "" {
 			firefoxCount++
 		}
 	}
