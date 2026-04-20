@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/awsms/chromium2firefox/internal/progress"
@@ -109,6 +110,26 @@ func CopyDirectory(src, dst string, reporter progress.Sink) error {
 	return nil
 }
 
+func CopyPathReplacing(src, dst string, reporter progress.Sink) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	if err := os.RemoveAll(dst); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	if info.IsDir() {
+		return CopyDirectory(src, dst, reporter)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return copyFile(src, dst, reporter)
+}
+
 func copyFile(src, dst string, reporter progress.Sink) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -165,25 +186,8 @@ func MergePreferences(ctx context.Context, sourcePath, targetPath string, report
 		return fmt.Errorf("unmarshal target preferences: %w", err)
 	}
 
-	// Merge "extensions" section
 	if sourceExt, ok := sourceMap["extensions"].(map[string]any); ok {
-		targetExt, ok := targetMap["extensions"].(map[string]any)
-		if !ok {
-			targetExt = make(map[string]any)
-			targetMap["extensions"] = targetExt
-		}
-
-		// Merge "settings"
-		if sourceSettings, ok := sourceExt["settings"].(map[string]any); ok {
-			targetSettings, ok := targetExt["settings"].(map[string]any)
-			if !ok {
-				targetSettings = make(map[string]any)
-				targetExt["settings"] = targetSettings
-			}
-			for k, v := range sourceSettings {
-				targetSettings[k] = v
-			}
-		}
+		mergeExtensionPreferences(targetMap, sourceExt)
 	}
 
 	newData, err := json.MarshalIndent(targetMap, "", "  ")
@@ -205,3 +209,61 @@ func MergePreferences(ctx context.Context, sourcePath, targetPath string, report
 	return nil
 }
 
+func mergeExtensionPreferences(targetMap map[string]any, sourceExt map[string]any) {
+	targetExt, ok := targetMap["extensions"].(map[string]any)
+	if !ok {
+		targetExt = make(map[string]any)
+		targetMap["extensions"] = targetExt
+	}
+
+	mergeNestedMap(targetExt, sourceExt, "settings")
+	mergeNestedMap(targetExt, sourceExt, "commands")
+	mergeNestedMap(targetExt, sourceExt, "global_shortcuts")
+}
+
+func mergeNestedMap(target, source map[string]any, key string) {
+	sourceMap, ok := source[key].(map[string]any)
+	if !ok {
+		return
+	}
+
+	targetMap, ok := target[key].(map[string]any)
+	if !ok {
+		targetMap = make(map[string]any)
+		target[key] = targetMap
+	}
+
+	for k, v := range sourceMap {
+		targetMap[k] = v
+	}
+}
+
+func ExtensionIDsFromPreferences(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read preferences: %w", err)
+	}
+
+	var prefs map[string]any
+	if err := json.Unmarshal(data, &prefs); err != nil {
+		return nil, fmt.Errorf("unmarshal preferences: %w", err)
+	}
+
+	extensions, ok := prefs["extensions"].(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+	settings, ok := extensions["settings"].(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+
+	ids := make([]string, 0, len(settings))
+	for id := range settings {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}

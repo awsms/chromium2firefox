@@ -3,6 +3,7 @@ package converter
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -135,6 +136,70 @@ func TestConvertChromiumToChromium(t *testing.T) {
 	}
 }
 
+func TestConvertChromiumToChromiumCopiesExtensionIndexedDB(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	sourceDir := filepath.Join(tmpDir, "source")
+	targetDir := filepath.Join(tmpDir, "target")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(sourceDir) error = %v", err)
+	}
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(targetDir) error = %v", err)
+	}
+
+	const extensionID = "kehjnamedhlpcgomlpcpnebpgmmcdbie"
+	writePreferencesWithExtension(t, filepath.Join(sourceDir, "Preferences"), extensionID)
+	writePreferencesWithExtension(t, filepath.Join(targetDir, "Preferences"), extensionID)
+
+	sourceLevelDB := filepath.Join(sourceDir, "IndexedDB", "chrome-extension_"+extensionID+"_0.indexeddb.leveldb")
+	sourceBlob := filepath.Join(sourceDir, "IndexedDB", "chrome-extension_"+extensionID+"_0.indexeddb.blob")
+	if err := os.MkdirAll(sourceLevelDB, 0o755); err != nil {
+		t.Fatalf("MkdirAll(sourceLevelDB) error = %v", err)
+	}
+	if err := os.MkdirAll(sourceBlob, 0o755); err != nil {
+		t.Fatalf("MkdirAll(sourceBlob) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceLevelDB, "CURRENT"), []byte("source-leveldb"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source CURRENT) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceBlob, "1"), []byte("source-blob"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source blob) error = %v", err)
+	}
+
+	targetLevelDB := filepath.Join(targetDir, "IndexedDB", "chrome-extension_"+extensionID+"_0.indexeddb.leveldb")
+	if err := os.MkdirAll(targetLevelDB, 0o755); err != nil {
+		t.Fatalf("MkdirAll(targetLevelDB) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetLevelDB, "stale"), []byte("stale"), 0o644); err != nil {
+		t.Fatalf("WriteFile(target stale) error = %v", err)
+	}
+
+	options := Options{Extensions: true, Merge: true}
+	if err := ConvertProfile(ctx, sourceDir, targetDir, options); err != nil {
+		t.Fatalf("ConvertProfile(C2C extensions) error = %v", err)
+	}
+
+	currentContent, err := os.ReadFile(filepath.Join(targetLevelDB, "CURRENT"))
+	if err != nil {
+		t.Fatalf("ReadFile(target CURRENT) error = %v", err)
+	}
+	if string(currentContent) != "source-leveldb" {
+		t.Fatalf("expected copied CURRENT file, got %q", string(currentContent))
+	}
+	if _, err := os.Stat(filepath.Join(targetLevelDB, "stale")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected stale leveldb file to be replaced, err=%v", err)
+	}
+	blobContent, err := os.ReadFile(filepath.Join(targetDir, "IndexedDB", "chrome-extension_"+extensionID+"_0.indexeddb.blob", "1"))
+	if err != nil {
+		t.Fatalf("ReadFile(target blob) error = %v", err)
+	}
+	if string(blobContent) != "source-blob" {
+		t.Fatalf("expected copied blob file, got %q", string(blobContent))
+	}
+}
+
 func createDummyDB(t *testing.T, path string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
@@ -142,6 +207,21 @@ func createDummyDB(t *testing.T, path string) {
 		t.Fatalf("sql.Open(%q) error = %v", path, err)
 	}
 	db.Close()
+}
+
+func writePreferencesWithExtension(t *testing.T, path, extensionID string) {
+	t.Helper()
+
+	content := []byte(`{
+  "extensions": {
+    "settings": {
+      "` + extensionID + `": {}
+    }
+  }
+}`)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", path, err)
+	}
 }
 
 func createChromiumHistoryDB(t *testing.T, path string) {

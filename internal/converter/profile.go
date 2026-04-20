@@ -3,10 +3,13 @@ package converter
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/awsms/chromium2firefox/internal/chromium"
 	"github.com/awsms/chromium2firefox/internal/firefox"
+	"github.com/awsms/chromium2firefox/internal/progress"
 )
 
 type ProfileType int
@@ -275,10 +278,73 @@ func ConvertChromiumToChromium(ctx context.Context, sourceProfileDir, targetProf
 				}
 			}
 		}
+		if sourcePrefs != "" {
+			if err := copyExtensionIndexedDB(sourceProfileDir, targetProfileDir, sourcePrefs, reporter); err != nil {
+				return fmt.Errorf("copy extension indexeddb: %w", err)
+			}
+		}
 	}
 
 	reporter.Info("[100%%] import completed")
 	return nil
+}
+
+func copyExtensionIndexedDB(sourceProfileDir, targetProfileDir, sourcePrefs string, reporter *progress.Reporter) error {
+	extensionIDs, err := chromium.ExtensionIDsFromPreferences(sourcePrefs)
+	if err != nil {
+		return err
+	}
+	if len(extensionIDs) == 0 {
+		return nil
+	}
+
+	sourceIndexedDBDir, err := discoverOptionalProfileDir(sourceProfileDir, "IndexedDB")
+	if err != nil || sourceIndexedDBDir == "" {
+		return err
+	}
+
+	targetIndexedDBDir := filepath.Join(targetProfileDir, "IndexedDB")
+	if err := os.MkdirAll(targetIndexedDBDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir target indexeddb dir: %w", err)
+	}
+
+	entries, err := os.ReadDir(sourceIndexedDBDir)
+	if err != nil {
+		return fmt.Errorf("read source indexeddb dir: %w", err)
+	}
+
+	for _, entry := range entries {
+		if !isExtensionIndexedDBEntry(entry.Name(), extensionIDs) {
+			continue
+		}
+
+		sourcePath := filepath.Join(sourceIndexedDBDir, entry.Name())
+		targetPath := filepath.Join(targetIndexedDBDir, entry.Name())
+		size, _ := entrySize(sourcePath)
+		if reporter != nil {
+			reporter.StartStage("importing", sourcePath, size)
+		}
+		if err := chromium.CopyPathReplacing(sourcePath, targetPath, reporter); err != nil {
+			return fmt.Errorf("copy indexeddb entry %s: %w", entry.Name(), err)
+		}
+		if reporter != nil {
+			reporter.FinishStage("importing", sourcePath, size)
+		}
+	}
+
+	return nil
+}
+
+func isExtensionIndexedDBEntry(name string, extensionIDs []string) bool {
+	if !strings.HasPrefix(name, "chrome-extension_") {
+		return false
+	}
+	for _, id := range extensionIDs {
+		if strings.HasPrefix(name, "chrome-extension_"+id+"_") {
+			return true
+		}
+	}
+	return false
 }
 
 func ConvertChromiumToFirefox(ctx context.Context, chromiumProfileDir, firefoxProfileDir string, options Options) error {
