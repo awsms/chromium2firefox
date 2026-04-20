@@ -67,6 +67,13 @@ func backupFile(path string, reporter progress.Sink) error {
 	return nil
 }
 
+func CopyFileWithBackup(src, dst string, reporter progress.Sink) error {
+	if err := backupFile(dst, reporter); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("backup target file: %w", err)
+	}
+	return copyFile(src, dst, reporter)
+}
+
 func CopyDirectory(src, dst string, reporter progress.Sink) error {
 	info, err := os.Stat(src)
 	if err != nil {

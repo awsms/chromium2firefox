@@ -15,6 +15,7 @@ var (
 	sourceDir string
 	destDir   string
 	only      string
+	merge     bool
 )
 
 func main() {
@@ -43,6 +44,7 @@ based on the contents of the provided profile directories.`,
 	rootCmd.PersistentFlags().StringVarP(&sourceDir, "source", "s", "", "path to the source profile directory")
 	rootCmd.PersistentFlags().StringVarP(&destDir, "dest", "d", "", "path to the destination profile directory")
 	rootCmd.PersistentFlags().StringVarP(&only, "only", "o", "", "only import selected data: history,favicons,cookies,search,extensions")
+	rootCmd.PersistentFlags().BoolVarP(&merge, "merge", "m", true, "merge data into the destination profile (defaults to true; false will overwrite)")
 
 	rootCmd.MarkPersistentFlagDirname("source")
 	rootCmd.MarkPersistentFlagDirname("dest")
@@ -103,6 +105,7 @@ func runImport(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}
+	options.Merge = merge
 
 	if err := converter.ConvertProfile(context.Background(), sourceDir, destDir, options); err != nil {
 		return fmt.Errorf("convert profile: %w", err)

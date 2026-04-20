@@ -100,6 +100,9 @@ func ImportFavicons(ctx context.Context, faviconsPath string, favicons []Favicon
 	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
 		return fmt.Errorf("set busy timeout: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, "PRAGMA synchronous = NORMAL"); err != nil {
+		return fmt.Errorf("set synchronous normal: %w", err)
+	}
 
 	mappingColumns, err := getTableColumns(ctx, db, "icon_mapping")
 	if err != nil {
@@ -116,79 +119,69 @@ func ImportFavicons(ctx context.Context, faviconsPath string, favicons []Favicon
 	}
 	defer tx.Rollback()
 
+	// Cache for icon URLs to IDs
+	iconCache := make(map[string]int64)
+	rows, err := tx.QueryContext(ctx, "SELECT url, id FROM favicons")
+	if err == nil {
+		for rows.Next() {
+			var url string
+			var id int64
+			if err := rows.Scan(&url, &id); err == nil {
+				iconCache[url] = id
+			}
+		}
+		rows.Close()
+	}
+
 	progressor := progress.NewStageProgress(reporter, importSize, int64(len(favicons)))
 	for _, fav := range favicons {
 		// 1. Ensure icon in favicons table
-		var iconID int64
-		err = tx.QueryRowContext(ctx, "SELECT id FROM favicons WHERE url = ?", fav.IconURL).Scan(&iconID)
-		if err == sql.ErrNoRows {
-			res, err := tx.ExecContext(ctx, "INSERT INTO favicons (url, icon_type) VALUES (?, 1)", fav.IconURL)
+		iconID, ok := iconCache[fav.IconURL]
+		if !ok {
+			_, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO favicons (url, icon_type) VALUES (?, 1)", fav.IconURL)
 			if err != nil {
 				return fmt.Errorf("insert favicon %s: %w", fav.IconURL, err)
 			}
-			iconID, _ = res.LastInsertId()
-		} else if err != nil {
-			return fmt.Errorf("query favicon %s: %w", fav.IconURL, err)
+			err = tx.QueryRowContext(ctx, "SELECT id FROM favicons WHERE url = ?", fav.IconURL).Scan(&iconID)
+			if err != nil {
+				return fmt.Errorf("query favicon %s after insert: %w", fav.IconURL, err)
+			}
+			iconCache[fav.IconURL] = iconID
 		}
 
 		// 2. Ensure bitmap in favicon_bitmaps table
-		var bitmapExists bool
-		err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM favicon_bitmaps WHERE icon_id = ? AND width = ? AND height = ?)", iconID, fav.Width, fav.Height).Scan(&bitmapExists)
-		if err != nil {
-			return fmt.Errorf("check bitmap existence for %s: %w", fav.IconURL, err)
+		cols := []string{"icon_id", "last_updated", "image_data", "width", "height"}
+		args := []any{iconID, fav.LastUpdated, fav.ImageData, fav.Width, fav.Height}
+		if bitmapColumns["last_requested"] {
+			cols = append(cols, "last_requested")
+			args = append(args, 0)
 		}
-
-		if bitmapExists {
-			_, err = tx.ExecContext(ctx, `
-UPDATE favicon_bitmaps SET
-	last_updated = ?,
-	image_data = ?
-WHERE icon_id = ? AND width = ? AND height = ?
-`, fav.LastUpdated, fav.ImageData, iconID, fav.Width, fav.Height)
-			if err != nil {
-				return fmt.Errorf("update bitmap for %s: %w", fav.IconURL, err)
-			}
-		} else {
-			cols := []string{"icon_id", "last_updated", "image_data", "width", "height"}
-			args := []any{iconID, fav.LastUpdated, fav.ImageData, fav.Width, fav.Height}
-			if bitmapColumns["last_requested"] {
-				cols = append(cols, "last_requested")
-				args = append(args, 0)
-			}
-			placeholders := make([]string, len(cols))
-			for i := range placeholders {
-				placeholders[i] = "?"
-			}
-			query := fmt.Sprintf("INSERT INTO favicon_bitmaps (%s) VALUES (%s)", strings.Join(cols, ", "), strings.Join(placeholders, ", "))
-			_, err = tx.ExecContext(ctx, query, args...)
-			if err != nil {
-				return fmt.Errorf("insert bitmap for %s: %w", fav.IconURL, err)
-			}
+		placeholders := make([]string, len(cols))
+		for i := range placeholders {
+			placeholders[i] = "?"
+		}
+		// Using REPLACE (or INSERT OR REPLACE) ensures we update existing bitmaps
+		query := fmt.Sprintf("INSERT OR REPLACE INTO favicon_bitmaps (%s) VALUES (%s)", strings.Join(cols, ", "), strings.Join(placeholders, ", "))
+		_, err = tx.ExecContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("insert/replace bitmap for %s: %w", fav.IconURL, err)
 		}
 
 		// 3. Ensure mapping in icon_mapping table
-		var mappingExists bool
-		err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM icon_mapping WHERE page_url = ? AND icon_id = ?)", fav.PageURL, iconID).Scan(&mappingExists)
-		if err != nil {
-			return fmt.Errorf("check mapping existence for %s: %w", fav.PageURL, err)
+		cols = []string{"page_url", "icon_id"}
+		args = []any{fav.PageURL, iconID}
+		if mappingColumns["page_url_type"] {
+			cols = append(cols, "page_url_type")
+			args = append(args, 0)
 		}
-
-		if !mappingExists {
-			cols := []string{"page_url", "icon_id"}
-			args := []any{fav.PageURL, iconID}
-			if mappingColumns["page_url_type"] {
-				cols = append(cols, "page_url_type")
-				args = append(args, 0) // Default to normal
-			}
-			placeholders := make([]string, len(cols))
-			for i := range placeholders {
-				placeholders[i] = "?"
-			}
-			query := fmt.Sprintf("INSERT INTO icon_mapping (%s) VALUES (%s)", strings.Join(cols, ", "), strings.Join(placeholders, ", "))
-			_, err = tx.ExecContext(ctx, query, args...)
-			if err != nil {
-				return fmt.Errorf("insert mapping %s -> %s: %w", fav.PageURL, fav.IconURL, err)
-			}
+		placeholders = make([]string, len(cols))
+		for i := range placeholders {
+			placeholders[i] = "?"
+		}
+		query = fmt.Sprintf("INSERT OR IGNORE INTO icon_mapping (%s) VALUES (%s)", strings.Join(cols, ", "), strings.Join(placeholders, ", "))
+		_, err = tx.ExecContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("insert mapping %s -> %s: %w", fav.PageURL, fav.IconURL, err)
 		}
 		progressor.Step(1)
 	}

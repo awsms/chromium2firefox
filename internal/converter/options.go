@@ -11,6 +11,7 @@ type Options struct {
 	Cookies    bool
 	Search     bool
 	Extensions bool
+	Merge      bool
 }
 
 func DefaultOptions() Options {
@@ -20,6 +21,7 @@ func DefaultOptions() Options {
 		Cookies:    true,
 		Search:     true,
 		Extensions: true,
+		Merge:      true,
 	}
 }
 
@@ -28,7 +30,7 @@ func ParseOnly(value string) (Options, error) {
 		return DefaultOptions(), nil
 	}
 
-	options := Options{}
+	options := Options{Merge: true}
 	for _, part := range strings.Split(value, ",") {
 		switch strings.TrimSpace(strings.ToLower(part)) {
 		case "history":

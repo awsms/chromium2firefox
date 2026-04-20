@@ -71,12 +71,14 @@ func createChromiumFaviconsEmptyDB(t *testing.T, path string) {
 		`CREATE TABLE favicons (
 			id INTEGER PRIMARY KEY,
 			url LONGVARCHAR NOT NULL,
-			icon_type INTEGER DEFAULT 1 NOT NULL
+			icon_type INTEGER DEFAULT 1 NOT NULL,
+			UNIQUE(url)
 		)`,
 		`CREATE TABLE icon_mapping (
 			id INTEGER PRIMARY KEY,
 			page_url LONGVARCHAR NOT NULL,
-			icon_id INTEGER NOT NULL
+			icon_id INTEGER NOT NULL,
+			UNIQUE(page_url, icon_id)
 		)`,
 		`CREATE TABLE favicon_bitmaps (
 			id INTEGER PRIMARY KEY,
@@ -84,9 +86,9 @@ func createChromiumFaviconsEmptyDB(t *testing.T, path string) {
 			last_updated INTEGER DEFAULT 0 NOT NULL,
 			image_data BLOB NOT NULL,
 			width INTEGER DEFAULT 0 NOT NULL,
-			height INTEGER DEFAULT 0 NOT NULL
+			height INTEGER DEFAULT 0 NOT NULL,
+			UNIQUE(icon_id, width, height)
 		)`,
-		// We omit UNIQUE constraints to verify our manual check logic works in all environments
 	}
 
 	for _, stmt := range stmts {
