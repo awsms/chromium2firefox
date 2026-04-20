@@ -122,7 +122,7 @@ func copyFile(src, dst string, reporter progress.Sink) error {
 	}
 	defer out.Close()
 
-	if _, err = io.Copy(out, in); err != nil {
+	if _, err = io.Copy(out, progress.NewReader(in, reporter)); err != nil {
 		return err
 	}
 	return out.Sync()
@@ -133,11 +133,25 @@ func MergePreferences(ctx context.Context, sourcePath, targetPath string, report
 		return fmt.Errorf("backup target preferences: %w", err)
 	}
 
+	sourceInfo, err := os.Stat(sourcePath)
+	if err != nil {
+		return err
+	}
+	if reporter != nil {
+		reporter.StartStage("reading", sourcePath, sourceInfo.Size())
+	}
 	sourceData, err := os.ReadFile(sourcePath)
 	if err != nil {
 		return fmt.Errorf("read source preferences: %w", err)
 	}
+	if reporter != nil {
+		reporter.Advance(sourceInfo.Size())
+		reporter.FinishStage("reading", sourcePath, sourceInfo.Size())
+	}
 
+	if _, err := os.Stat(targetPath); err != nil {
+		return err
+	}
 	targetData, err := os.ReadFile(targetPath)
 	if err != nil {
 		return fmt.Errorf("read target preferences: %w", err)
@@ -177,6 +191,17 @@ func MergePreferences(ctx context.Context, sourcePath, targetPath string, report
 		return fmt.Errorf("marshal merged preferences: %w", err)
 	}
 
-	return os.WriteFile(targetPath, newData, 0644)
+	if reporter != nil {
+		reporter.StartStage("importing", targetPath, int64(len(newData)))
+	}
+	err = os.WriteFile(targetPath, newData, 0644)
+	if err != nil {
+		return err
+	}
+	if reporter != nil {
+		reporter.Advance(int64(len(newData)))
+		reporter.FinishStage("importing", targetPath, int64(len(newData)))
+	}
+	return nil
 }
 

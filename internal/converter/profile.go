@@ -251,8 +251,15 @@ func ConvertChromiumToChromium(ctx context.Context, sourceProfileDir, targetProf
 			sourceDir, _ := discoverOptionalProfileDir(sourceProfileDir, dirName)
 			if sourceDir != "" {
 				targetDir := filepath.Join(targetProfileDir, dirName)
+				size, _ := entrySize(sourceDir)
+				if reporter != nil {
+					reporter.StartStage("importing", sourceDir, size)
+				}
 				if err := chromium.CopyDirectory(sourceDir, targetDir, reporter); err != nil {
 					return fmt.Errorf("copy extension directory %s: %w", dirName, err)
+				}
+				if reporter != nil {
+					reporter.FinishStage("importing", sourceDir, size)
 				}
 			}
 		}
