@@ -64,13 +64,27 @@ func newChromiumProfileReporter(chromiumProfileDir string, options Options, sour
 			targetPaths = append(targetPaths, path)
 		}
 	}
+	if options.Extensions {
+		// Include Preferences for merging and Extension directories
+		path, err := discoverOptionalChromiumFile(chromiumProfileDir, "Preferences")
+		if err == nil && path != "" {
+			targetPaths = append(targetPaths, path)
+		}
+		extDirs := []string{"Extensions", "Local Extension Settings", "Sync Extension Settings", "Extension Rules", "Extension State"}
+		for _, dir := range extDirs {
+			path, err := discoverOptionalProfileDir(chromiumProfileDir, dir)
+			if err == nil && path != "" {
+				targetPaths = append(targetPaths, path)
+			}
+		}
+	}
 	return newReporter(targetPaths, sourcePaths)
 }
 
 func newReporter(targetPaths, sourcePaths []string) (*progress.Reporter, error) {
 	var total int64
 	for _, path := range targetPaths {
-		size, err := fileSize(path)
+		size, err := entrySize(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -80,7 +94,7 @@ func newReporter(targetPaths, sourcePaths []string) (*progress.Reporter, error) 
 		total += size
 	}
 	for _, path := range sourcePaths {
-		size, err := fileSize(path)
+		size, err := entrySize(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -95,6 +109,28 @@ func newReporter(targetPaths, sourcePaths []string) (*progress.Reporter, error) 
 	return progress.New(os.Stderr, total), nil
 }
 
+func entrySize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	if !info.IsDir() {
+		return info.Size(), nil
+	}
+
+	var size int64
+	err = filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size, err
+}
+
 func fileSize(path string) (int64, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -105,6 +141,22 @@ func fileSize(path string) (int64, error) {
 	}
 	return info.Size(), nil
 }
+
+func discoverOptionalProfileDir(profileDir, name string) (string, error) {
+	path := filepath.Join(profileDir, name)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return "", nil
+	}
+	return path, nil
+}
+
 
 func discoverRequiredProfileFile(profileDir, name string) (string, error) {
 	path := filepath.Join(profileDir, name)

@@ -3,6 +3,7 @@ package converter
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/awsms/chromium2firefox/internal/chromium"
 	"github.com/awsms/chromium2firefox/internal/firefox"
@@ -28,8 +29,8 @@ func (p ProfileType) String() string {
 }
 
 func DetectProfileType(dir string) ProfileType {
-	chromiumFiles := []string{"Cookies", "Favicons", "Bookmarks", "Web Data", "History"}
-	firefoxFiles := []string{"places.sqlite", "favicons.sqlite", "cookies.sqlite", "search.json.mozlz4"}
+	chromiumFiles := []string{"Cookies", "Favicons", "Bookmarks", "Web Data", "History", "Preferences", "Extensions"}
+	firefoxFiles := []string{"places.sqlite", "favicons.sqlite", "cookies.sqlite", "search.json.mozlz4", "prefs.js"}
 
 	chromiumCount := 0
 	for _, name := range chromiumFiles {
@@ -186,6 +187,27 @@ func ConvertChromiumToChromium(ctx context.Context, sourceProfileDir, targetProf
 		if targetWebData != "" {
 			if err := chromium.ImportWebData(ctx, targetWebData, engines, webDataSize, reporter); err != nil {
 				return fmt.Errorf("import into target chromium web data: %w", err)
+			}
+		}
+	}
+
+	if options.Extensions {
+		sourcePrefs, _ := discoverOptionalChromiumFile(sourceProfileDir, "Preferences")
+		targetPrefs, _ := discoverOptionalChromiumFile(targetProfileDir, "Preferences")
+		if sourcePrefs != "" && targetPrefs != "" {
+			if err := chromium.MergePreferences(ctx, sourcePrefs, targetPrefs, reporter); err != nil {
+				return fmt.Errorf("merge preferences: %w", err)
+			}
+		}
+
+		extDirs := []string{"Extensions", "Local Extension Settings", "Sync Extension Settings", "Extension Rules", "Extension State"}
+		for _, dirName := range extDirs {
+			sourceDir, _ := discoverOptionalProfileDir(sourceProfileDir, dirName)
+			if sourceDir != "" {
+				targetDir := filepath.Join(targetProfileDir, dirName)
+				if err := chromium.CopyDirectory(sourceDir, targetDir, reporter); err != nil {
+					return fmt.Errorf("copy extension directory %s: %w", dirName, err)
+				}
 			}
 		}
 	}

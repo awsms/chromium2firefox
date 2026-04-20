@@ -6,18 +6,20 @@ import (
 )
 
 type Options struct {
-	History  bool
-	Favicons bool
-	Cookies  bool
-	Search   bool
+	History    bool
+	Favicons   bool
+	Cookies    bool
+	Search     bool
+	Extensions bool
 }
 
 func DefaultOptions() Options {
 	return Options{
-		History:  true,
-		Favicons: true,
-		Cookies:  true,
-		Search:   true,
+		History:    true,
+		Favicons:   true,
+		Cookies:    true,
+		Search:     true,
+		Extensions: true,
 	}
 }
 
@@ -37,6 +39,8 @@ func ParseOnly(value string) (Options, error) {
 			options.Cookies = true
 		case "search", "search-engines", "engines":
 			options.Search = true
+		case "extensions", "extension":
+			options.Extensions = true
 		case "":
 			continue
 		default:
@@ -44,7 +48,7 @@ func ParseOnly(value string) (Options, error) {
 		}
 	}
 
-	if !options.History && !options.Favicons && !options.Cookies && !options.Search {
+	if !options.History && !options.Favicons && !options.Cookies && !options.Search && !options.Extensions {
 		return Options{}, fmt.Errorf("no import targets selected")
 	}
 	return options, nil

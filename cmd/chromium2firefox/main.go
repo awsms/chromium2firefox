@@ -42,7 +42,7 @@ based on the contents of the provided profile directories.`,
 
 	rootCmd.PersistentFlags().StringVarP(&sourceDir, "source", "s", "", "path to the source profile directory")
 	rootCmd.PersistentFlags().StringVarP(&destDir, "dest", "d", "", "path to the destination profile directory")
-	rootCmd.PersistentFlags().StringVarP(&only, "only", "o", "", "only import selected data: history,favicons,cookies,search")
+	rootCmd.PersistentFlags().StringVarP(&only, "only", "o", "", "only import selected data: history,favicons,cookies,search,extensions")
 
 	rootCmd.MarkPersistentFlagDirname("source")
 	rootCmd.MarkPersistentFlagDirname("dest")
@@ -58,7 +58,7 @@ based on the contents of the provided profile directories.`,
 
 	// Add autocompletion for the "only" flag
 	rootCmd.RegisterFlagCompletionFunc("only", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		options := []string{"history", "favicons", "cookies", "search"}
+		options := []string{"history", "favicons", "cookies", "search", "extensions"}
 		parts := strings.Split(toComplete, ",")
 		lastPart := parts[len(parts)-1]
 
