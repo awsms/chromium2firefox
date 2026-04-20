@@ -9,105 +9,81 @@ import (
 )
 
 func newProfileReporter(firefoxProfileDir string, options Options, sourcePaths ...string) (*progress.Reporter, error) {
-	var targetPaths []string
-	if options.History {
-		targetPaths = append(targetPaths, filepath.Join(firefoxProfileDir, "places.sqlite"))
+	var total int64
+	targetFiles := []string{"places.sqlite", "favicons.sqlite", "cookies.sqlite", "search.json.mozlz4"}
+	for _, name := range targetFiles {
+		if path, _ := discoverOptionalProfileFile(firefoxProfileDir, name); path != "" {
+			size, _ := entrySize(path)
+			total += size
+		}
 	}
-	if options.Favicons {
-		targetPaths = append(targetPaths, filepath.Join(firefoxProfileDir, "favicons.sqlite"))
+	for _, path := range sourcePaths {
+		size, _ := entrySize(path)
+		total += size * 2
 	}
-	if options.Cookies {
-		targetPaths = append(targetPaths, filepath.Join(firefoxProfileDir, "cookies.sqlite"))
-	}
-	if options.Search {
-		targetPaths = append(targetPaths, filepath.Join(firefoxProfileDir, "search.json.mozlz4"))
-	}
-	return newReporter(targetPaths, sourcePaths)
+	return newReporter(total), nil
 }
 
 func newChromiumProfileReporter(chromiumProfileDir string, options Options, sourcePaths ...string) (*progress.Reporter, error) {
-	var targetPaths []string
-	var err error
+	var total int64
 
-	if options.History {
-		var path string
-		path, err = discoverRequiredChromiumFile(chromiumProfileDir, "History")
-		if err != nil {
-			return nil, err
+	// History, Favicons, Cookies, Web Data usually follow: read + backup + write = 2*source + target
+	mergedFiles := []string{"History", "Favicons", "Cookies", "Web Data"}
+	for _, name := range mergedFiles {
+		srcPath := ""
+		for _, p := range sourcePaths {
+			if filepath.Base(p) == name {
+				srcPath = p
+				break
+			}
 		}
-		targetPaths = append(targetPaths, path)
-	}
-	if options.Favicons {
-		path, err := discoverOptionalChromiumFile(chromiumProfileDir, "Favicons")
-		if err != nil {
-			return nil, err
-		}
-		if path != "" {
-			targetPaths = append(targetPaths, path)
-		}
-	}
-	if options.Cookies {
-		path, err := discoverOptionalChromiumFile(chromiumProfileDir, "Cookies")
-		if err != nil {
-			return nil, err
-		}
-		if path != "" {
-			targetPaths = append(targetPaths, path)
+		if srcPath != "" {
+			srcSize, _ := entrySize(srcPath)
+			total += srcSize * 2
+			if dstPath, _ := discoverOptionalChromiumFile(chromiumProfileDir, name); dstPath != "" {
+				dstSize, _ := entrySize(dstPath)
+				total += dstSize
+			}
 		}
 	}
-	if options.Search {
-		path, err := discoverOptionalChromiumFile(chromiumProfileDir, "Web Data")
-		if err != nil {
-			return nil, err
-		}
-		if path != "" {
-			targetPaths = append(targetPaths, path)
-		}
-	}
+
 	if options.Extensions {
-		// Include Preferences for merging and Extension directories
-		path, err := discoverOptionalChromiumFile(chromiumProfileDir, "Preferences")
-		if err == nil && path != "" {
-			targetPaths = append(targetPaths, path)
+		// Preferences merge: source + 2*target
+		if srcPath, _ := discoverOptionalChromiumFile(chromiumProfileDir, "Preferences"); srcPath != "" {
+			srcSize, _ := entrySize(srcPath)
+			total += srcSize
+			if dstPath, _ := discoverOptionalChromiumFile(chromiumProfileDir, "Preferences"); dstPath != "" {
+				dstSize, _ := entrySize(dstPath)
+				total += dstSize * 2
+			}
 		}
+		// Extension directories: direct copy = 1*source
 		extDirs := []string{"Extensions", "Local Extension Settings", "Sync Extension Settings", "Extension Rules", "Extension State"}
 		for _, dir := range extDirs {
-			path, err := discoverOptionalProfileDir(chromiumProfileDir, dir)
-			if err == nil && path != "" {
-				targetPaths = append(targetPaths, path)
+			srcPath := ""
+			for _, p := range sourcePaths {
+				if filepath.Base(p) == dir {
+					srcPath = p
+					break
+				}
+			}
+			if srcPath != "" {
+				srcSize, _ := entrySize(srcPath)
+				total += srcSize
 			}
 		}
 	}
-	return newReporter(targetPaths, sourcePaths)
+
+	return newReporter(total), nil
 }
 
-func newReporter(targetPaths, sourcePaths []string) (*progress.Reporter, error) {
-	var total int64
-	for _, path := range targetPaths {
-		size, err := entrySize(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("stat %s: %w", path, err)
-		}
-		total += size
-	}
-	for _, path := range sourcePaths {
-		size, err := entrySize(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("stat %s: %w", path, err)
-		}
-		total += size * 2
-	}
-	if total == 0 {
+func newReporter(total int64) *progress.Reporter {
+	if total <= 0 {
 		total = 1
 	}
-	return progress.New(os.Stderr, total), nil
+	return progress.New(os.Stderr, total)
 }
+
 
 func entrySize(path string) (int64, error) {
 	info, err := os.Stat(path)
