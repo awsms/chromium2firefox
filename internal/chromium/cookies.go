@@ -174,6 +174,9 @@ func ImportCookies(ctx context.Context, cookiesPath string, cookies []Cookie, so
 	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
 		return fmt.Errorf("set busy timeout: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, "PRAGMA synchronous = NORMAL"); err != nil {
+		return fmt.Errorf("set synchronous normal: %w", err)
+	}
 
 	hasDomainHashPrefix, err := chromiumCookiesHaveDomainHashPrefix(ctx, db)
 	if err != nil {
@@ -193,6 +196,51 @@ func ImportCookies(ctx context.Context, cookiesPath string, cookies []Cookie, so
 	}
 	defer tx.Rollback()
 
+	// Pre-load existing cookie keys to prevent duplicates when schema lacks UNIQUE constraints
+	type cookieKey struct {
+		host, name, path, topFrame string
+		scheme, port, ancestor     int
+	}
+	cookieCache := make(map[cookieKey]bool)
+
+	queryCols := []string{"host_key", "name", "path"}
+	if columns["top_frame_site_key"] {
+		queryCols = append(queryCols, "top_frame_site_key")
+	}
+	if columns["source_scheme"] {
+		queryCols = append(queryCols, "source_scheme")
+	}
+	if columns["source_port"] {
+		queryCols = append(queryCols, "source_port")
+	}
+	if columns["has_cross_site_ancestor"] {
+		queryCols = append(queryCols, "has_cross_site_ancestor")
+	}
+
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf("SELECT %s FROM cookies", strings.Join(queryCols, ", ")))
+	if err == nil {
+		for rows.Next() {
+			var k cookieKey
+			dest := []any{&k.host, &k.name, &k.path}
+			if columns["top_frame_site_key"] {
+				dest = append(dest, &k.topFrame)
+			}
+			if columns["source_scheme"] {
+				dest = append(dest, &k.scheme)
+			}
+			if columns["source_port"] {
+				dest = append(dest, &k.port)
+			}
+			if columns["has_cross_site_ancestor"] {
+				dest = append(dest, &k.ancestor)
+			}
+			if err := rows.Scan(dest...); err == nil {
+				cookieCache[k] = true
+			}
+		}
+		rows.Close()
+	}
+
 	progressor := progress.NewStageProgress(reporter, importSize, int64(len(cookies)))
 	for _, cookie := range cookies {
 		encrypted, err := encryptCookieValue(cookie.HostKey, cookie.Value, hasDomainHashPrefix, v11Password, v11PasswordErr)
@@ -205,38 +253,25 @@ func ImportCookies(ctx context.Context, cookiesPath string, cookies []Cookie, so
 			hasExpires = 1
 		}
 
-		// Cleverly detect existing cookies using the unique index columns
-		checkQuery := "SELECT EXISTS(SELECT 1 FROM cookies WHERE host_key = ? AND name = ? AND path = ?"
-		checkArgs := []any{cookie.HostKey, cookie.Name, cookie.Path}
-		if columns["top_frame_site_key"] {
-			checkQuery += " AND top_frame_site_key = ?"
-			checkArgs = append(checkArgs, cookie.TopFrameSiteKey)
-		}
-		if columns["has_cross_site_ancestor"] {
-			checkQuery += " AND has_cross_site_ancestor = ?"
-			checkArgs = append(checkArgs, 0)
-		}
-		if columns["source_scheme"] {
-			checkQuery += " AND source_scheme = ?"
-			checkArgs = append(checkArgs, cookie.SourceScheme)
-		}
+		port := cookie.SourceScheme // default fallback
 		if columns["source_port"] {
-			checkQuery += " AND source_port = ?"
-			port := 80
+			port = 80
 			if cookie.IsSecure {
 				port = 443
 			}
-			checkArgs = append(checkArgs, port)
-		}
-		checkQuery += ")"
-
-		var exists bool
-		err = tx.QueryRowContext(ctx, checkQuery, checkArgs...).Scan(&exists)
-		if err != nil {
-			return fmt.Errorf("check cookie existence: %w", err)
 		}
 
-		if exists {
+		k := cookieKey{
+			host:     cookie.HostKey,
+			name:     cookie.Name,
+			path:     cookie.Path,
+			topFrame: cookie.TopFrameSiteKey,
+			scheme:   cookie.SourceScheme,
+			port:     port,
+			ancestor: 0,
+		}
+
+		if cookieCache[k] {
 			query, args := buildUpdateCookieQuery(cookie, encrypted, hasExpires, columns)
 			_, err = tx.ExecContext(ctx, query, args...)
 			if err != nil {
@@ -248,6 +283,7 @@ func ImportCookies(ctx context.Context, cookiesPath string, cookies []Cookie, so
 			if err != nil {
 				return fmt.Errorf("insert cookie %s: %w", cookie.Name, err)
 			}
+			cookieCache[k] = true
 		}
 		progressor.Step(1)
 	}

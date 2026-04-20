@@ -42,6 +42,15 @@ func TestImportCookies(t *testing.T) {
 	}
 	defer db.Close()
 
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM cookies WHERE host_key = '.example.com' AND name = 'test-cookie'").Scan(&count)
+	if err != nil {
+		t.Fatalf("query count error = %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 cookie row, got %d (duplication bug!)", count)
+	}
+
 	var encryptedValue []byte
 	err = db.QueryRow("SELECT encrypted_value FROM cookies WHERE name = 'test-cookie'").Scan(&encryptedValue)
 	if err != nil {
@@ -103,6 +112,57 @@ func TestImportCookiesDynamicColumns(t *testing.T) {
 	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM cookies WHERE name = 'minimal-cookie')").Scan(&exists)
 	if err != nil || !exists {
 		t.Errorf("cookie was not imported into minimal db")
+	}
+}
+
+func TestCookieUpsertScenario(t *testing.T) {
+	ctx := context.Background()
+	chromiumDir := t.TempDir()
+	cookiesPath := filepath.Join(chromiumDir, "Cookies_Upsert")
+
+	createChromiumCookiesEmptyDB(t, cookiesPath)
+
+	// 1. Manually insert an initial cookie
+	db, err := sql.Open("sqlite", cookiesPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO cookies (host_key, name, value, encrypted_value, path, creation_utc, expires_utc, last_access_utc, is_secure, is_httponly, has_expires, is_persistent, source_port) 
+		VALUES ('.upsert.com', 'session', 'old-value', x'00', '/', 0, 0, 0, 0, 0, 0, 0, 80)`)
+	db.Close()
+	if err != nil {
+		t.Fatalf("manual insert error = %v", err)
+	}
+
+	// 2. Import the same cookie with a new value
+	cookies := []Cookie{
+		{
+			HostKey: ".upsert.com",
+			Name:    "session",
+			Value:   "new-value",
+			Path:    "/",
+		},
+	}
+
+	if err := ImportCookies(ctx, cookiesPath, cookies, 1024, nil); err != nil {
+		t.Fatalf("ImportCookies() error = %v", err)
+	}
+
+	// 3. Verify it was updated and NOT duplicated
+	db, _ = sql.Open("sqlite", cookiesPath)
+	defer db.Close()
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM cookies WHERE host_key = '.upsert.com' AND name = 'session'").Scan(&count)
+	if count != 1 {
+		t.Errorf("expected 1 cookie row, got %d (duplication error)", count)
+	}
+
+	var encryptedValue []byte
+	db.QueryRow("SELECT encrypted_value FROM cookies WHERE name = 'session'").Scan(&encryptedValue)
+	v11Password, v11PasswordErr := lookupV11Password(ctx, cookiesPath)
+	decrypted, _ := decryptCookieValue(".upsert.com", encryptedValue, false, v11Password, v11PasswordErr)
+	if decrypted != "new-value" {
+		t.Errorf("expected new-value, got %q", decrypted)
 	}
 }
 
