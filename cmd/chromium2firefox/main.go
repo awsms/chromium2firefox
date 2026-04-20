@@ -12,10 +12,11 @@ import (
 )
 
 var (
-	chromiumProfile string
-	firefoxProfile  string
-	only            string
-	reverse         bool
+	sourceChromium string
+	sourceFirefox  string
+	targetChromium string
+	only           string
+	reverse        bool
 )
 
 func main() {
@@ -23,28 +24,34 @@ func main() {
 		Use:   "chromium2firefox",
 		Short: "Losslessly import profiles between Chromium and Firefox",
 		Long: `A tool to import history, cookies, favicons, and search engines 
-between Chromium-based browsers and Firefox.
+between Chromium-based browsers and Firefox, or between two Chromium browsers.
 
 By default, it imports from Chromium to Firefox. 
-Use --reverse to import from Firefox to Chromium.`,
+Use --reverse to import from Firefox to Chromium.
+Use --to-chromium to import from Chromium to another Chromium browser.`,
 		Example: `  # Import from Chromium to Firefox (default)
   chromium2firefox -c ~/.config/google-chrome/Default -f ~/.mozilla/firefox/xxx.default
 
   # Import from Firefox to Chromium
-  chromium2firefox --reverse -f ~/.mozilla/firefox/xxx.default -c ~/.config/google-chrome/Default`,
+  chromium2firefox --reverse -f ~/.mozilla/firefox/xxx.default -c ~/.config/google-chrome/Default
+
+  # Import from Chromium to another Chromium browser
+  chromium2firefox -c ~/.config/google-chrome/Default --to-chromium ~/.config/brave-browser/Default`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runImport(cmd)
 		},
 	}
 
-	rootCmd.PersistentFlags().StringVarP(&chromiumProfile, "chromium-profile", "c", "", "path to the Chromium profile directory")
-	rootCmd.PersistentFlags().StringVarP(&firefoxProfile, "firefox-profile", "f", "", "path to the Firefox profile directory")
+	rootCmd.PersistentFlags().StringVarP(&sourceChromium, "chromium-profile", "c", "", "path to the (source) Chromium profile directory")
+	rootCmd.PersistentFlags().StringVarP(&sourceFirefox, "firefox-profile", "f", "", "path to the (source/target) Firefox profile directory")
+	rootCmd.PersistentFlags().StringVarP(&targetChromium, "to-chromium", "t", "", "path to the target Chromium profile directory")
 	rootCmd.PersistentFlags().StringVarP(&only, "only", "o", "", "only import selected data: history,favicons,cookies,search")
 	rootCmd.PersistentFlags().BoolVarP(&reverse, "reverse", "r", false, "reverse the conversion direction (Firefox to Chromium)")
 
 	rootCmd.MarkPersistentFlagDirname("chromium-profile")
 	rootCmd.MarkPersistentFlagDirname("firefox-profile")
+	rootCmd.MarkPersistentFlagDirname("to-chromium")
 
 	// Explicitly add a version command
 	rootCmd.AddCommand(&cobra.Command{
@@ -91,11 +98,15 @@ Use --reverse to import from Firefox to Chromium.`,
 }
 
 func runImport(cmd *cobra.Command) error {
-	if chromiumProfile == "" || firefoxProfile == "" {
+	if sourceChromium == "" && sourceFirefox == "" {
 		if err := cmd.Help(); err != nil {
 			return err
 		}
-		return fmt.Errorf("both --chromium-profile and --firefox-profile are required")
+		return fmt.Errorf("at least one source profile (--chromium-profile or --firefox-profile) is required")
+	}
+
+	if targetChromium == "" && sourceFirefox == "" {
+		return fmt.Errorf("a target profile (--to-chromium or --firefox-profile) is required")
 	}
 
 	options, err := converter.ParseOnly(only)
@@ -104,7 +115,7 @@ func runImport(cmd *cobra.Command) error {
 	}
 	options.Reverse = reverse
 
-	if err := converter.ConvertProfile(context.Background(), chromiumProfile, firefoxProfile, options); err != nil {
+	if err := converter.ConvertProfile(context.Background(), sourceChromium, sourceFirefox, targetChromium, sourceFirefox, options); err != nil {
 		return fmt.Errorf("convert profile: %w", err)
 	}
 

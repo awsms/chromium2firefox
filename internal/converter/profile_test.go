@@ -32,7 +32,7 @@ func TestConvertProfileBidirectional(t *testing.T) {
 
 	// Test Chromium to Firefox
 	options := DefaultOptions()
-	if err := ConvertProfile(ctx, chromiumDir, firefoxDir, options); err != nil {
+	if err := ConvertProfile(ctx, chromiumDir, firefoxDir, "", firefoxDir, options); err != nil {
 		t.Fatalf("ConvertProfile(C2F) error = %v", err)
 	}
 
@@ -58,7 +58,7 @@ func TestConvertProfileBidirectional(t *testing.T) {
 	db.Exec("INSERT INTO moz_places (url, title, rev_host, visit_count, guid, url_hash) VALUES ('https://firefox.com/', 'Firefox', 'moc.xoferif.', 1, 'fxfx', 999)")
 	db.Close()
 
-	if err := ConvertProfile(ctx, chromiumDir, firefoxDir, options); err != nil {
+	if err := ConvertProfile(ctx, chromiumDir, firefoxDir, "", firefoxDir, options); err != nil {
 		t.Fatalf("ConvertProfile(F2C) error = %v", err)
 	}
 
@@ -74,6 +74,55 @@ func TestConvertProfileBidirectional(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("expected 1 url in chromium, got %d", count)
+	}
+}
+
+func TestConvertChromiumToChromium(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	sourceDir := filepath.Join(tmpDir, "source")
+	targetDir := filepath.Join(tmpDir, "target")
+
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(sourceDir) error = %v", err)
+	}
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(targetDir) error = %v", err)
+	}
+
+	sourceHistory := filepath.Join(sourceDir, "History")
+	targetHistory := filepath.Join(targetDir, "History")
+
+	createChromiumHistoryDB(t, sourceHistory)
+	createChromiumHistoryDB(t, targetHistory)
+
+	// Add unique URL to source
+	db, err := sql.Open("sqlite", sourceHistory)
+	if err != nil {
+		t.Fatalf("sql.Open(source) error = %v", err)
+	}
+	db.Exec("INSERT INTO urls (url, title, visit_count, last_visit_time) VALUES ('https://source.com/', 'Source', 1, 13344473600000001)")
+	db.Close()
+
+	options := DefaultOptions()
+	if err := ConvertProfile(ctx, sourceDir, "", targetDir, "", options); err != nil {
+		t.Fatalf("ConvertProfile(C2C) error = %v", err)
+	}
+
+	// Verify target has imported data
+	db, err = sql.Open("sqlite", targetHistory)
+	if err != nil {
+		t.Fatalf("sql.Open(target) error = %v", err)
+	}
+	defer db.Close()
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM urls WHERE url = 'https://source.com/'").Scan(&count)
+	if err != nil {
+		t.Fatalf("query target error = %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 url in target chromium, got %d", count)
 	}
 }
 

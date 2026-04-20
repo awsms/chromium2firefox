@@ -8,11 +8,129 @@ import (
 	"github.com/awsms/chromium2firefox/internal/firefox"
 )
 
-func ConvertProfile(ctx context.Context, chromiumProfileDir, firefoxProfileDir string, options Options) error {
-	if options.Reverse {
-		return ConvertFirefoxToChromium(ctx, firefoxProfileDir, chromiumProfileDir, options)
+func ConvertProfile(ctx context.Context, sourceChromium, sourceFirefox, targetChromium, targetFirefox string, options Options) error {
+	if sourceChromium != "" && targetChromium != "" {
+		return ConvertChromiumToChromium(ctx, sourceChromium, targetChromium, options)
 	}
-	return ConvertChromiumToFirefox(ctx, chromiumProfileDir, firefoxProfileDir, options)
+	if options.Reverse {
+		return ConvertFirefoxToChromium(ctx, sourceFirefox, sourceChromium, options)
+	}
+	return ConvertChromiumToFirefox(ctx, sourceChromium, sourceFirefox, options)
+}
+
+func ConvertChromiumToChromium(ctx context.Context, sourceProfileDir, targetProfileDir string, options Options) error {
+	var (
+		historyPath string
+		err         error
+	)
+	if options.History {
+		historyPath, err = discoverRequiredProfileFile(sourceProfileDir, "History")
+		if err != nil {
+			return err
+		}
+	}
+
+	faviconPath, err := discoverOptionalProfileFile(sourceProfileDir, "Favicons")
+	if err != nil {
+		return err
+	}
+
+	cookiesPath, err := discoverOptionalProfileFile(sourceProfileDir, "Cookies")
+	if err != nil {
+		return err
+	}
+
+	webDataPath, err := discoverOptionalProfileFile(sourceProfileDir, "Web Data")
+	if err != nil {
+		return err
+	}
+
+	reporter, err := newChromiumProfileReporter(targetProfileDir, options, historyPath, faviconPath, cookiesPath, webDataPath)
+	if err != nil {
+		return err
+	}
+	reporter.Info("starting import from Chromium %s into Chromium %s", sourceProfileDir, targetProfileDir)
+
+	if options.History {
+		historySize, _ := fileSize(historyPath)
+		reporter.StartStage("reading", historyPath, historySize)
+		dataset, err := chromium.ReadHistory(ctx, historyPath)
+		if err != nil {
+			return fmt.Errorf("read source chromium history: %w", err)
+		}
+		reporter.FinishStage("reading", historyPath, historySize)
+
+		targetHistory, err := discoverRequiredChromiumFile(targetProfileDir, "History")
+		if err != nil {
+			return err
+		}
+		if err := chromium.ImportHistory(ctx, targetHistory, dataset, historySize, reporter); err != nil {
+			return fmt.Errorf("import into target chromium history: %w", err)
+		}
+	}
+
+	if options.Favicons && faviconPath != "" {
+		faviconSize, _ := fileSize(faviconPath)
+		reporter.StartStage("reading", faviconPath, faviconSize)
+		favicons, err := chromium.ReadFavicons(ctx, faviconPath)
+		if err != nil {
+			return fmt.Errorf("read source chromium favicons: %w", err)
+		}
+		reporter.FinishStage("reading", faviconPath, faviconSize)
+
+		targetFavicons, err := discoverOptionalChromiumFile(targetProfileDir, "Favicons")
+		if err != nil {
+			return err
+		}
+		if targetFavicons != "" {
+			if err := chromium.ImportFavicons(ctx, targetFavicons, favicons, faviconSize, reporter); err != nil {
+				return fmt.Errorf("import into target chromium favicons: %w", err)
+			}
+		}
+	}
+
+	if options.Cookies && cookiesPath != "" {
+		cookiesSize, _ := fileSize(cookiesPath)
+		reporter.StartStage("reading", cookiesPath, cookiesSize)
+		cookies, err := chromium.ReadCookies(ctx, cookiesPath)
+		if err != nil {
+			return fmt.Errorf("read source chromium cookies: %w", err)
+		}
+		reporter.FinishStage("reading", cookiesPath, cookiesSize)
+
+		targetCookies, err := discoverOptionalChromiumFile(targetProfileDir, "Cookies")
+		if err != nil {
+			return err
+		}
+		if targetCookies != "" {
+			if err := chromium.ImportCookies(ctx, targetCookies, cookies, cookiesSize, reporter); err != nil {
+				return fmt.Errorf("import into target chromium cookies: %w", err)
+			}
+		}
+	}
+
+	if options.Search && webDataPath != "" {
+		webDataSize, _ := fileSize(webDataPath)
+		reporter.StartStage("reading", webDataPath, webDataSize)
+		engines, err := chromium.ReadWebData(ctx, webDataPath)
+		if err != nil {
+			return fmt.Errorf("read source chromium web data: %w", err)
+		}
+		reporter.FinishStage("reading", webDataPath, webDataSize)
+
+		targetWebData, err := discoverOptionalChromiumFile(targetProfileDir, "Web Data")
+		if err != nil {
+			return err
+		}
+		if targetWebData != "" {
+			if err := chromium.ImportWebData(ctx, targetWebData, engines, webDataSize, reporter); err != nil {
+				return fmt.Errorf("import into target chromium web data: %w", err)
+			}
+		}
+	}
+
+	reporter.Info("[100%%] import completed")
+	return nil
 }
 
 func ConvertChromiumToFirefox(ctx context.Context, chromiumProfileDir, firefoxProfileDir string, options Options) error {
