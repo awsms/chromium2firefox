@@ -25,14 +25,20 @@ func TestConvertProfileBidirectional(t *testing.T) {
 	}
 
 	chromiumHistory := filepath.Join(chromiumDir, "History")
+	chromiumWebData := filepath.Join(chromiumDir, "Web Data")
 	firefoxPlaces := filepath.Join(firefoxDir, "places.sqlite")
+	firefoxFavicons := filepath.Join(firefoxDir, "favicons.sqlite")
 
 	createChromiumHistoryDB(t, chromiumHistory)
+	// Create dummy web data for detection
+	createDummyDB(t, chromiumWebData)
 	createFirefoxPlacesDB(t, firefoxPlaces)
+	// Create dummy favicons for detection
+	createDummyDB(t, firefoxFavicons)
 
 	// Test Chromium to Firefox
 	options := DefaultOptions()
-	if err := ConvertProfile(ctx, chromiumDir, firefoxDir, "", firefoxDir, options); err != nil {
+	if err := ConvertProfile(ctx, chromiumDir, firefoxDir, options); err != nil {
 		t.Fatalf("ConvertProfile(C2F) error = %v", err)
 	}
 
@@ -52,13 +58,12 @@ func TestConvertProfileBidirectional(t *testing.T) {
 	}
 
 	// Test Firefox to Chromium (Reverse)
-	options.Reverse = true
 	// Let's add something unique to Firefox first
 	db, _ = sql.Open("sqlite", firefoxPlaces)
 	db.Exec("INSERT INTO moz_places (url, title, rev_host, visit_count, guid, url_hash) VALUES ('https://firefox.com/', 'Firefox', 'moc.xoferif.', 1, 'fxfx', 999)")
 	db.Close()
 
-	if err := ConvertProfile(ctx, chromiumDir, firefoxDir, "", firefoxDir, options); err != nil {
+	if err := ConvertProfile(ctx, firefoxDir, chromiumDir, options); err != nil {
 		t.Fatalf("ConvertProfile(F2C) error = %v", err)
 	}
 
@@ -92,10 +97,14 @@ func TestConvertChromiumToChromium(t *testing.T) {
 	}
 
 	sourceHistory := filepath.Join(sourceDir, "History")
+	sourceWebData := filepath.Join(sourceDir, "Web Data")
 	targetHistory := filepath.Join(targetDir, "History")
+	targetWebData := filepath.Join(targetDir, "Web Data")
 
 	createChromiumHistoryDB(t, sourceHistory)
+	createDummyDB(t, sourceWebData)
 	createChromiumHistoryDB(t, targetHistory)
+	createDummyDB(t, targetWebData)
 
 	// Add unique URL to source
 	db, err := sql.Open("sqlite", sourceHistory)
@@ -106,7 +115,7 @@ func TestConvertChromiumToChromium(t *testing.T) {
 	db.Close()
 
 	options := DefaultOptions()
-	if err := ConvertProfile(ctx, sourceDir, "", targetDir, "", options); err != nil {
+	if err := ConvertProfile(ctx, sourceDir, targetDir, options); err != nil {
 		t.Fatalf("ConvertProfile(C2C) error = %v", err)
 	}
 
@@ -124,6 +133,15 @@ func TestConvertChromiumToChromium(t *testing.T) {
 	if count != 1 {
 		t.Errorf("expected 1 url in target chromium, got %d", count)
 	}
+}
+
+func createDummyDB(t *testing.T, path string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open(%q) error = %v", path, err)
+	}
+	db.Close()
 }
 
 func createChromiumHistoryDB(t *testing.T, path string) {

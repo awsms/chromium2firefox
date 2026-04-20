@@ -8,14 +8,75 @@ import (
 	"github.com/awsms/chromium2firefox/internal/firefox"
 )
 
-func ConvertProfile(ctx context.Context, sourceChromium, sourceFirefox, targetChromium, targetFirefox string, options Options) error {
-	if sourceChromium != "" && targetChromium != "" {
-		return ConvertChromiumToChromium(ctx, sourceChromium, targetChromium, options)
+type ProfileType int
+
+const (
+	UnknownProfile ProfileType = iota
+	ChromiumProfile
+	FirefoxProfile
+)
+
+func (p ProfileType) String() string {
+	switch p {
+	case ChromiumProfile:
+		return "Chromium"
+	case FirefoxProfile:
+		return "Firefox"
+	default:
+		return "Unknown"
 	}
-	if options.Reverse {
-		return ConvertFirefoxToChromium(ctx, sourceFirefox, sourceChromium, options)
+}
+
+func DetectProfileType(dir string) ProfileType {
+	chromiumFiles := []string{"Cookies", "Favicons", "Bookmarks", "Web Data", "History"}
+	firefoxFiles := []string{"places.sqlite", "favicons.sqlite", "cookies.sqlite", "search.json.mozlz4"}
+
+	chromiumCount := 0
+	for _, name := range chromiumFiles {
+		if path, _ := discoverOptionalProfileFile(dir, name); path != "" {
+			chromiumCount++
+		}
 	}
-	return ConvertChromiumToFirefox(ctx, sourceChromium, sourceFirefox, options)
+
+	firefoxCount := 0
+	for _, name := range firefoxFiles {
+		if path, _ := discoverOptionalProfileFile(dir, name); path != "" {
+			firefoxCount++
+		}
+	}
+
+	if chromiumCount > firefoxCount {
+		return ChromiumProfile
+	}
+	if firefoxCount > chromiumCount {
+		return FirefoxProfile
+	}
+	return UnknownProfile
+}
+
+func ConvertProfile(ctx context.Context, sourceDir, targetDir string, options Options) error {
+	sourceType := DetectProfileType(sourceDir)
+	targetType := DetectProfileType(targetDir)
+
+	if sourceType == UnknownProfile {
+		return fmt.Errorf("could not detect source profile type in %s", sourceDir)
+	}
+	if targetType == UnknownProfile {
+		return fmt.Errorf("could not detect target profile type in %s", targetDir)
+	}
+
+	switch {
+	case sourceType == ChromiumProfile && targetType == FirefoxProfile:
+		return ConvertChromiumToFirefox(ctx, sourceDir, targetDir, options)
+	case sourceType == FirefoxProfile && targetType == ChromiumProfile:
+		return ConvertFirefoxToChromium(ctx, sourceDir, targetDir, options)
+	case sourceType == ChromiumProfile && targetType == ChromiumProfile:
+		return ConvertChromiumToChromium(ctx, sourceDir, targetDir, options)
+	case sourceType == FirefoxProfile && targetType == FirefoxProfile:
+		return fmt.Errorf("Firefox to Firefox conversion is not implemented yet")
+	default:
+		return fmt.Errorf("unsupported conversion from %s to %s", sourceType, targetType)
+	}
 }
 
 func ConvertChromiumToChromium(ctx context.Context, sourceProfileDir, targetProfileDir string, options Options) error {
