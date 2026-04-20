@@ -208,6 +208,17 @@ WHERE keyword = ?
 	}
 	if reporter != nil {
 		reporter.FinishStage("committing", webDataPath, finalizeSize)
+		reporter.StartStage("finalizing", webDataPath, 0)
+	}
+
+	if _, err := db.ExecContext(ctx, "VACUUM"); err != nil {
+		if reporter != nil {
+			reporter.Info("warning: vacuum failed: %v", err)
+		}
+	}
+
+	if reporter != nil {
+		reporter.FinishStage("finalizing", webDataPath, 0)
 	}
 	return nil
 }

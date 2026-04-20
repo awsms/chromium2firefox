@@ -31,7 +31,7 @@ func TestImportFavicons(t *testing.T) {
 		t.Fatalf("ImportFavicons() error = %v", err)
 	}
 
-	// Test update logic
+	// Test deduplication logic: second import should not change data or add rows
 	favicons[0].ImageData = []byte("updated-image")
 	if err := ImportFavicons(ctx, faviconsPath, favicons, 1024, nil); err != nil {
 		t.Fatalf("ImportFavicons(Update) error = %v", err)
@@ -48,8 +48,9 @@ func TestImportFavicons(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query image_data error = %v", err)
 	}
-	if string(data) != "updated-image" {
-		t.Errorf("expected updated image data, got %q", string(data))
+	// We expect "test-image" because we skip existing bitmaps to prevent bloat
+	if string(data) != "test-image" {
+		t.Errorf("expected original image data (skipped update), got %q", string(data))
 	}
 
 	var count int
@@ -71,14 +72,12 @@ func createChromiumFaviconsEmptyDB(t *testing.T, path string) {
 		`CREATE TABLE favicons (
 			id INTEGER PRIMARY KEY,
 			url LONGVARCHAR NOT NULL,
-			icon_type INTEGER DEFAULT 1 NOT NULL,
-			UNIQUE(url)
+			icon_type INTEGER DEFAULT 1 NOT NULL
 		)`,
 		`CREATE TABLE icon_mapping (
 			id INTEGER PRIMARY KEY,
 			page_url LONGVARCHAR NOT NULL,
-			icon_id INTEGER NOT NULL,
-			UNIQUE(page_url, icon_id)
+			icon_id INTEGER NOT NULL
 		)`,
 		`CREATE TABLE favicon_bitmaps (
 			id INTEGER PRIMARY KEY,
@@ -86,8 +85,7 @@ func createChromiumFaviconsEmptyDB(t *testing.T, path string) {
 			last_updated INTEGER DEFAULT 0 NOT NULL,
 			image_data BLOB NOT NULL,
 			width INTEGER DEFAULT 0 NOT NULL,
-			height INTEGER DEFAULT 0 NOT NULL,
-			UNIQUE(icon_id, width, height)
+			height INTEGER DEFAULT 0 NOT NULL
 		)`,
 	}
 

@@ -119,8 +119,12 @@ func ImportFavicons(ctx context.Context, faviconsPath string, favicons []Favicon
 	}
 	defer tx.Rollback()
 
-	// Cache for icon URLs to IDs
+	// Caches for target database state to prevent duplicates when schema lacks UNIQUE constraints
 	iconCache := make(map[string]int64)
+	bitmapCache := make(map[string]bool)
+	mappingCache := make(map[string]bool)
+
+	// Populate caches from target database
 	rows, err := tx.QueryContext(ctx, "SELECT url, id FROM favicons")
 	if err == nil {
 		for rows.Next() {
@@ -133,55 +137,83 @@ func ImportFavicons(ctx context.Context, faviconsPath string, favicons []Favicon
 		rows.Close()
 	}
 
+	rows, err = tx.QueryContext(ctx, "SELECT icon_id, width, height FROM favicon_bitmaps")
+	if err == nil {
+		for rows.Next() {
+			var iconID int64
+			var w, h int
+			if err := rows.Scan(&iconID, &w, &h); err == nil {
+				bitmapCache[fmt.Sprintf("%d\x00%d\x00%d", iconID, w, h)] = true
+			}
+		}
+		rows.Close()
+	}
+
+	rows, err = tx.QueryContext(ctx, "SELECT page_url, icon_id FROM icon_mapping")
+	if err == nil {
+		for rows.Next() {
+			var url string
+			var id int64
+			if err := rows.Scan(&url, &id); err == nil {
+				mappingCache[fmt.Sprintf("%s\x00%d", url, id)] = true
+			}
+		}
+		rows.Close()
+	}
+
 	progressor := progress.NewStageProgress(reporter, importSize, int64(len(favicons)))
 	for _, fav := range favicons {
 		// 1. Ensure icon in favicons table
 		iconID, ok := iconCache[fav.IconURL]
 		if !ok {
-			_, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO favicons (url, icon_type) VALUES (?, 1)", fav.IconURL)
+			res, err := tx.ExecContext(ctx, "INSERT INTO favicons (url, icon_type) VALUES (?, 1)", fav.IconURL)
 			if err != nil {
 				return fmt.Errorf("insert favicon %s: %w", fav.IconURL, err)
 			}
-			err = tx.QueryRowContext(ctx, "SELECT id FROM favicons WHERE url = ?", fav.IconURL).Scan(&iconID)
-			if err != nil {
-				return fmt.Errorf("query favicon %s after insert: %w", fav.IconURL, err)
-			}
+			iconID, _ = res.LastInsertId()
 			iconCache[fav.IconURL] = iconID
 		}
 
 		// 2. Ensure bitmap in favicon_bitmaps table
-		cols := []string{"icon_id", "last_updated", "image_data", "width", "height"}
-		args := []any{iconID, fav.LastUpdated, fav.ImageData, fav.Width, fav.Height}
-		if bitmapColumns["last_requested"] {
-			cols = append(cols, "last_requested")
-			args = append(args, 0)
-		}
-		placeholders := make([]string, len(cols))
-		for i := range placeholders {
-			placeholders[i] = "?"
-		}
-		// Using REPLACE (or INSERT OR REPLACE) ensures we update existing bitmaps
-		query := fmt.Sprintf("INSERT OR REPLACE INTO favicon_bitmaps (%s) VALUES (%s)", strings.Join(cols, ", "), strings.Join(placeholders, ", "))
-		_, err = tx.ExecContext(ctx, query, args...)
-		if err != nil {
-			return fmt.Errorf("insert/replace bitmap for %s: %w", fav.IconURL, err)
+		bitmapKey := fmt.Sprintf("%d\x00%d\x00%d", iconID, fav.Width, fav.Height)
+		if !bitmapCache[bitmapKey] {
+			cols := []string{"icon_id", "last_updated", "image_data", "width", "height"}
+			args := []any{iconID, fav.LastUpdated, fav.ImageData, fav.Width, fav.Height}
+			if bitmapColumns["last_requested"] {
+				cols = append(cols, "last_requested")
+				args = append(args, 0)
+			}
+			placeholders := make([]string, len(cols))
+			for i := range placeholders {
+				placeholders[i] = "?"
+			}
+			query := fmt.Sprintf("INSERT INTO favicon_bitmaps (%s) VALUES (%s)", strings.Join(cols, ", "), strings.Join(placeholders, ", "))
+			_, err = tx.ExecContext(ctx, query, args...)
+			if err != nil {
+				return fmt.Errorf("insert bitmap for %s: %w", fav.IconURL, err)
+			}
+			bitmapCache[bitmapKey] = true
 		}
 
 		// 3. Ensure mapping in icon_mapping table
-		cols = []string{"page_url", "icon_id"}
-		args = []any{fav.PageURL, iconID}
-		if mappingColumns["page_url_type"] {
-			cols = append(cols, "page_url_type")
-			args = append(args, 0)
-		}
-		placeholders = make([]string, len(cols))
-		for i := range placeholders {
-			placeholders[i] = "?"
-		}
-		query = fmt.Sprintf("INSERT OR IGNORE INTO icon_mapping (%s) VALUES (%s)", strings.Join(cols, ", "), strings.Join(placeholders, ", "))
-		_, err = tx.ExecContext(ctx, query, args...)
-		if err != nil {
-			return fmt.Errorf("insert mapping %s -> %s: %w", fav.PageURL, fav.IconURL, err)
+		mappingKey := fmt.Sprintf("%s\x00%d", fav.PageURL, iconID)
+		if !mappingCache[mappingKey] {
+			cols := []string{"page_url", "icon_id"}
+			args := []any{fav.PageURL, iconID}
+			if mappingColumns["page_url_type"] {
+				cols = append(cols, "page_url_type")
+				args = append(args, 0)
+			}
+			placeholders := make([]string, len(cols))
+			for i := range placeholders {
+				placeholders[i] = "?"
+			}
+			query := fmt.Sprintf("INSERT INTO icon_mapping (%s) VALUES (%s)", strings.Join(cols, ", "), strings.Join(placeholders, ", "))
+			_, err = tx.ExecContext(ctx, query, args...)
+			if err != nil {
+				return fmt.Errorf("insert mapping %s -> %s: %w", fav.PageURL, fav.IconURL, err)
+			}
+			mappingCache[mappingKey] = true
 		}
 		progressor.Step(1)
 	}
@@ -195,6 +227,18 @@ func ImportFavicons(ctx context.Context, faviconsPath string, favicons []Favicon
 	}
 	if reporter != nil {
 		reporter.FinishStage("committing", faviconsPath, finalizeSize)
+		reporter.StartStage("finalizing", faviconsPath, 0)
+	}
+
+	if _, err := db.ExecContext(ctx, "VACUUM"); err != nil {
+		// Log but don't fail, VACUUM is just optimization
+		if reporter != nil {
+			reporter.Info("warning: vacuum failed: %v", err)
+		}
+	}
+
+	if reporter != nil {
+		reporter.FinishStage("finalizing", faviconsPath, 0)
 	}
 	return nil
 }

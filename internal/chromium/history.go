@@ -328,6 +328,17 @@ VALUES (?, ?, ?, ?)
 	}
 	if reporter != nil {
 		reporter.FinishStage("committing", historyPath, finalizeSize)
+		reporter.StartStage("finalizing", historyPath, 0)
+	}
+
+	if _, err := db.ExecContext(ctx, "VACUUM"); err != nil {
+		if reporter != nil {
+			reporter.Info("warning: vacuum failed: %v", err)
+		}
+	}
+
+	if reporter != nil {
+		reporter.FinishStage("finalizing", historyPath, 0)
 	}
 	return nil
 }

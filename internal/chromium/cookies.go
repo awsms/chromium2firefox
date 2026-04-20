@@ -261,6 +261,17 @@ func ImportCookies(ctx context.Context, cookiesPath string, cookies []Cookie, so
 	}
 	if reporter != nil {
 		reporter.FinishStage("committing", cookiesPath, finalizeSize)
+		reporter.StartStage("finalizing", cookiesPath, 0)
+	}
+
+	if _, err := db.ExecContext(ctx, "VACUUM"); err != nil {
+		if reporter != nil {
+			reporter.Info("warning: vacuum failed: %v", err)
+		}
+	}
+
+	if reporter != nil {
+		reporter.FinishStage("finalizing", cookiesPath, 0)
 	}
 	return nil
 }
