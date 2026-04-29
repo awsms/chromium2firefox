@@ -200,6 +200,56 @@ func TestConvertChromiumToChromiumCopiesExtensionIndexedDB(t *testing.T) {
 	}
 }
 
+func TestConvertChromiumToChromiumCopiesAdditionalExtensionStores(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	sourceDir := filepath.Join(tmpDir, "source")
+	targetDir := filepath.Join(tmpDir, "target")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(sourceDir) error = %v", err)
+	}
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(targetDir) error = %v", err)
+	}
+
+	sourceScriptsDir := filepath.Join(sourceDir, "Extension Scripts")
+	sourceManagedDir := filepath.Join(sourceDir, "Managed Extension Settings")
+	if err := os.MkdirAll(sourceScriptsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(sourceScriptsDir) error = %v", err)
+	}
+	if err := os.MkdirAll(sourceManagedDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(sourceManagedDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceScriptsDir, "CURRENT"), []byte("scripts"), 0o644); err != nil {
+		t.Fatalf("WriteFile(Extension Scripts) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceManagedDir, "000003.log"), []byte("managed"), 0o644); err != nil {
+		t.Fatalf("WriteFile(Managed Extension Settings) error = %v", err)
+	}
+
+	options := Options{Extensions: true, Merge: true}
+	if err := ConvertChromiumToChromium(ctx, sourceDir, targetDir, options); err != nil {
+		t.Fatalf("ConvertChromiumToChromium(additional extension stores) error = %v", err)
+	}
+
+	scriptsContent, err := os.ReadFile(filepath.Join(targetDir, "Extension Scripts", "CURRENT"))
+	if err != nil {
+		t.Fatalf("ReadFile(target Extension Scripts) error = %v", err)
+	}
+	if string(scriptsContent) != "scripts" {
+		t.Fatalf("expected copied Extension Scripts content, got %q", string(scriptsContent))
+	}
+
+	managedContent, err := os.ReadFile(filepath.Join(targetDir, "Managed Extension Settings", "000003.log"))
+	if err != nil {
+		t.Fatalf("ReadFile(target Managed Extension Settings) error = %v", err)
+	}
+	if string(managedContent) != "managed" {
+		t.Fatalf("expected copied Managed Extension Settings content, got %q", string(managedContent))
+	}
+}
+
 func createDummyDB(t *testing.T, path string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)

@@ -66,6 +66,70 @@ func TestImportHistory(t *testing.T) {
 	}
 }
 
+func TestImportHistoryPreservesTransitionAndReferrerChain(t *testing.T) {
+	ctx := context.Background()
+	chromiumDir := t.TempDir()
+	historyPath := filepath.Join(chromiumDir, "History")
+
+	createChromiumEmptyDB(t, historyPath)
+
+	now := time.Now().Round(time.Second)
+	dataset := Dataset{
+		URLs: []URL{
+			{ID: 1, URL: "https://example.com/", Title: "Example", VisitCount: 2, LastVisitTime: now, Hidden: false},
+		},
+		Visits: []Visit{
+			{ID: 11, URLID: 1, VisitTime: now, Transition: 0x10000001},
+			{ID: 12, URLID: 1, VisitTime: now.Add(time.Second), FromVisitID: 11, Transition: 0xC0000000},
+		},
+	}
+
+	if err := ImportHistory(ctx, historyPath, dataset, 1024, nil); err != nil {
+		t.Fatalf("ImportHistory() error = %v", err)
+	}
+
+	db, err := sql.Open("sqlite", historyPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer db.Close()
+
+	rows, err := db.Query("SELECT id, from_visit, transition FROM visits ORDER BY visit_time ASC, id ASC LIMIT 2")
+	if err != nil {
+		t.Fatalf("query visits error = %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		id         int64
+		fromVisit  int64
+		transition int
+	}
+	var visits []row
+	for rows.Next() {
+		var item row
+		if err := rows.Scan(&item.id, &item.fromVisit, &item.transition); err != nil {
+			t.Fatalf("scan visit error = %v", err)
+		}
+		visits = append(visits, item)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate visits error = %v", err)
+	}
+	if len(visits) != 2 {
+		t.Fatalf("expected 2 imported visits, got %d", len(visits))
+	}
+	if visits[0].transition != 0x10000001 {
+		t.Fatalf("first transition = %#x, want %#x", visits[0].transition, 0x10000001)
+	}
+	if visits[1].transition != 0xC0000000 {
+		t.Fatalf("second transition = %#x, want %#x", visits[1].transition, 0xC0000000)
+	}
+	if visits[1].fromVisit != visits[0].id {
+		t.Fatalf("second from_visit = %d, want %d", visits[1].fromVisit, visits[0].id)
+	}
+}
+
 func createChromiumEmptyDB(t *testing.T, path string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)

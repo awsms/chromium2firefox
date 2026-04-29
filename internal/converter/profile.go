@@ -109,7 +109,7 @@ func ConvertChromiumToChromium(ctx context.Context, sourceProfileDir, targetProf
 		if p, _ := discoverOptionalChromiumFile(sourceProfileDir, "Preferences"); p != "" {
 			sourcePaths = append(sourcePaths, p)
 		}
-		extDirs := []string{"Extensions", "Local Extension Settings", "Sync Extension Settings", "Extension Rules", "Extension State"}
+		extDirs := chromiumExtensionDirectories()
 		for _, dir := range extDirs {
 			if p, _ := discoverOptionalProfileDir(sourceProfileDir, dir); p != "" {
 				sourcePaths = append(sourcePaths, p)
@@ -261,8 +261,7 @@ func ConvertChromiumToChromium(ctx context.Context, sourceProfileDir, targetProf
 			}
 		}
 
-		extDirs := []string{"Extensions", "Local Extension Settings", "Sync Extension Settings", "Extension Rules", "Extension State"}
-		for _, dirName := range extDirs {
+		for _, dirName := range chromiumExtensionDirectories() {
 			sourceDir, _ := discoverOptionalProfileDir(sourceProfileDir, dirName)
 			if sourceDir != "" {
 				targetDir := filepath.Join(targetProfileDir, dirName)
@@ -345,6 +344,18 @@ func isExtensionIndexedDBEntry(name string, extensionIDs []string) bool {
 		}
 	}
 	return false
+}
+
+func chromiumExtensionDirectories() []string {
+	return []string{
+		"Extensions",
+		"Local Extension Settings",
+		"Sync Extension Settings",
+		"Managed Extension Settings",
+		"Extension Rules",
+		"Extension State",
+		"Extension Scripts",
+	}
 }
 
 func ConvertChromiumToFirefox(ctx context.Context, chromiumProfileDir, firefoxProfileDir string, options Options) error {

@@ -20,29 +20,30 @@ import (
 )
 
 const (
-	chromiumCookiePrefixV10 = "v10"
-	chromiumCookiePrefixV11 = "v11"
+	chromiumCookiePrefixV10             = "v10"
+	chromiumCookiePrefixV11             = "v11"
+	chromiumCookieSourcePortUnspecified = -1
 )
 
 type Cookie struct {
-	HostKey               string
-	TopFrameSiteKey       string
-	Name                  string
-	Value                 string
-	Path                  string
-	ExpiresUnixMillis     int64
-	LastAccessUnixMicros  int64
-	CreationUnixMicros    int64
-	UpdateUnixMicros      int64
-	IsSecure              bool
-	IsHTTPOnly            bool
-	SameSite              int
-	SourceScheme          int
-	SourcePort            int
-	SourceType            int
-	Priority              int
+	HostKey              string
+	TopFrameSiteKey      string
+	Name                 string
+	Value                string
+	Path                 string
+	ExpiresUnixMillis    int64
+	LastAccessUnixMicros int64
+	CreationUnixMicros   int64
+	UpdateUnixMicros     int64
+	IsSecure             bool
+	IsHTTPOnly           bool
+	SameSite             int
+	SourceScheme         int
+	SourcePort           int
+	SourceType           int
+	Priority             int
 	HasCrossSiteAncestor int
-	IsPartitioned         bool
+	IsPartitioned        bool
 }
 
 // ReadCookies extracts all cookies from a Chromium-based browser's database.
@@ -172,18 +173,6 @@ func ImportCookies(ctx context.Context, cookiesPath string, cookies []Cookie, so
 		return nil
 	}
 
-	// Deduplicate source cookies: keep only the latest one for each identity
-	type cookieIdentity struct {
-		host, name, path, topFrame string
-	}
-	deduped := make(map[cookieIdentity]Cookie)
-	for _, c := range cookies {
-		id := cookieIdentity{c.HostKey, c.Name, c.Path, c.TopFrameSiteKey}
-		if existing, ok := deduped[id]; !ok || c.LastAccessUnixMicros > existing.LastAccessUnixMicros {
-			deduped[id] = c
-		}
-	}
-
 	if err := ensureRegularFile(cookiesPath); err != nil {
 		return err
 	}
@@ -218,6 +207,39 @@ func ImportCookies(ctx context.Context, cookiesPath string, cookies []Cookie, so
 		return fmt.Errorf("get cookies table columns: %w", err)
 	}
 
+	// Deduplicate source cookies using the identity the target schema can
+	// actually represent. Current Chromium includes top_frame_site_key,
+	// has_cross_site_ancestor, source_scheme, and source_port in the unique key.
+	type cookieIdentity struct {
+		host, name, path, topFrame string
+		sourceScheme               int
+		sourcePort                 int
+		hasCrossSiteAncestor       int
+	}
+	deduped := make(map[cookieIdentity]Cookie)
+	for _, c := range cookies {
+		id := cookieIdentity{
+			host: c.HostKey,
+			name: c.Name,
+			path: c.Path,
+		}
+		if columns["top_frame_site_key"] {
+			id.topFrame = c.TopFrameSiteKey
+		}
+		if columns["source_scheme"] {
+			id.sourceScheme = c.SourceScheme
+		}
+		if columns["source_port"] {
+			id.sourcePort = chromiumSourcePortForInsert(c)
+		}
+		if columns["has_cross_site_ancestor"] {
+			id.hasCrossSiteAncestor = c.HasCrossSiteAncestor
+		}
+		if existing, ok := deduped[id]; !ok || c.LastAccessUnixMicros > existing.LastAccessUnixMicros {
+			deduped[id] = c
+		}
+	}
+
 	v11Password, v11PasswordErr := lookupV11Password(ctx, cookiesPath)
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -238,14 +260,25 @@ func ImportCookies(ctx context.Context, cookiesPath string, cookies []Cookie, so
 			hasExpires = 1
 		}
 
-		// 1. Aggressive Cleanup: Delete ANY existing cookies matching the primary identity.
-		// We ignore source_port, source_scheme, and has_cross_site_ancestor in the cleanup
-		// to ensure we don't leave any browser-perceived duplicates behind.
+		// Chromium keys cookie rows by the full unique identity. Deleting on a
+		// weaker key would incorrectly collapse distinct cookies.
 		deleteQuery := "DELETE FROM cookies WHERE host_key = ? AND name = ? AND path = ?"
 		deleteArgs := []any{cookie.HostKey, cookie.Name, cookie.Path}
 		if columns["top_frame_site_key"] {
 			deleteQuery += " AND top_frame_site_key = ?"
 			deleteArgs = append(deleteArgs, cookie.TopFrameSiteKey)
+		}
+		if columns["source_scheme"] {
+			deleteQuery += " AND source_scheme = ?"
+			deleteArgs = append(deleteArgs, cookie.SourceScheme)
+		}
+		if columns["source_port"] {
+			deleteQuery += " AND source_port = ?"
+			deleteArgs = append(deleteArgs, chromiumSourcePortForInsert(cookie))
+		}
+		if columns["has_cross_site_ancestor"] {
+			deleteQuery += " AND has_cross_site_ancestor = ?"
+			deleteArgs = append(deleteArgs, cookie.HasCrossSiteAncestor)
 		}
 		if _, err := tx.ExecContext(ctx, deleteQuery, deleteArgs...); err != nil {
 			return fmt.Errorf("cleanup existing cookie %s: %w", cookie.Name, err)
@@ -334,14 +367,7 @@ func buildInsertCookieQuery(cookie Cookie, encrypted []byte, hasExpires int, col
 	}
 	if columns["source_port"] {
 		cols = append(cols, "source_port")
-		port := cookie.SourcePort
-		if port == 0 {
-			port = 80
-			if cookie.IsSecure {
-				port = 443
-			}
-		}
-		args = append(args, port)
+		args = append(args, chromiumSourcePortForInsert(cookie))
 	}
 	if columns["is_public_suffix"] {
 		cols = append(cols, "is_public_suffix")
@@ -427,14 +453,17 @@ func buildUpdateCookieQuery(cookie Cookie, encrypted []byte, hasExpires int, col
 	}
 	if columns["source_port"] {
 		where += " AND source_port = ?"
-		port := 80
-		if cookie.IsSecure {
-			port = 443
-		}
-		args = append(args, port)
+		args = append(args, chromiumSourcePortForInsert(cookie))
 	}
 
 	return fmt.Sprintf("UPDATE cookies SET %s %s", strings.Join(sets, ", "), where), args
+}
+
+func chromiumSourcePortForInsert(cookie Cookie) int {
+	if cookie.SourcePort != 0 {
+		return cookie.SourcePort
+	}
+	return chromiumCookieSourcePortUnspecified
 }
 
 func chromiumCookiesHaveDomainHashPrefix(ctx context.Context, db *sql.DB) (bool, error) {

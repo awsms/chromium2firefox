@@ -206,6 +206,7 @@ VALUES (?, ?, ?, ?)
 
 	urlIDByOriginalID := make(map[int64]int64)
 	segmentsByUrlID := make(map[int64]int64)
+	visitIDByOriginalID := make(map[int64]int64, len(dataset.Visits))
 	progressor := progress.NewStageProgress(reporter, importSize, int64(len(dataset.URLs)+len(dataset.Visits)))
 	for _, url := range dataset.URLs {
 		var existingID int64
@@ -275,15 +276,16 @@ VALUES (?, ?, ?, ?)
 
 		segmentID := segmentsByUrlID[newURLID]
 		visitTime := timeToChromiumMicros(visit.VisitTime)
-
-		// Use 0x30000000 (CHAIN_START | CHAIN_END) + core transition
-		transition := 0x30000000 | (visit.Transition & 0xFF)
+		fromVisitID := int64(0)
+		if visit.FromVisitID != 0 {
+			fromVisitID = visitIDByOriginalID[visit.FromVisitID]
+		}
 
 		res, err := visitStmt.ExecContext(ctx,
 			newURLID,
 			visitTime,
-			0,
-			transition,
+			fromVisitID,
+			visit.Transition,
 			segmentID,
 			int64(visit.VisitDuration.Microseconds()),
 			visit.ExternalReferrerURL,
@@ -296,6 +298,7 @@ VALUES (?, ?, ?, ?)
 		if err != nil {
 			return fmt.Errorf("get inserted visit id for url %d: %w", newURLID, err)
 		}
+		visitIDByOriginalID[visit.ID] = id
 
 		if visitSourceStmt != nil {
 			_, _ = visitSourceStmt.ExecContext(ctx, id)

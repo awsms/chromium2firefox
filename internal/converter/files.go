@@ -58,8 +58,7 @@ func newChromiumProfileReporter(chromiumProfileDir string, options Options, sour
 			}
 		}
 		// Extension directories: direct copy = 1*source
-		extDirs := []string{"Extensions", "Local Extension Settings", "Sync Extension Settings", "Extension Rules", "Extension State"}
-		for _, dir := range extDirs {
+		for _, dir := range chromiumExtensionDirectories() {
 			srcPath := ""
 			for _, p := range sourcePaths {
 				if filepath.Base(p) == dir {
@@ -83,7 +82,6 @@ func newReporter(total int64) *progress.Reporter {
 	}
 	return progress.New(os.Stderr, total)
 }
-
 
 func entrySize(path string) (int64, error) {
 	info, err := os.Stat(path)
@@ -132,7 +130,6 @@ func discoverOptionalProfileDir(profileDir, name string) (string, error) {
 	}
 	return path, nil
 }
-
 
 func discoverOptionalProfileEntry(profileDir, name string) (string, error) {
 	path := filepath.Join(profileDir, name)
