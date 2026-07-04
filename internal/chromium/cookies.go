@@ -233,7 +233,7 @@ func ImportCookies(ctx context.Context, cookiesPath string, cookies []Cookie, so
 			id.sourcePort = chromiumSourcePortForInsert(c)
 		}
 		if columns["has_cross_site_ancestor"] {
-			id.hasCrossSiteAncestor = c.HasCrossSiteAncestor
+			id.hasCrossSiteAncestor = chromiumHasCrossSiteAncestorForInsert(c)
 		}
 		if existing, ok := deduped[id]; !ok || c.LastAccessUnixMicros > existing.LastAccessUnixMicros {
 			deduped[id] = c
@@ -276,9 +276,9 @@ func ImportCookies(ctx context.Context, cookiesPath string, cookies []Cookie, so
 			deleteQuery += " AND source_port = ?"
 			deleteArgs = append(deleteArgs, chromiumSourcePortForInsert(cookie))
 		}
-		if columns["has_cross_site_ancestor"] {
+		if columns["has_cross_site_ancestor"] && cookie.TopFrameSiteKey != "" {
 			deleteQuery += " AND has_cross_site_ancestor = ?"
-			deleteArgs = append(deleteArgs, cookie.HasCrossSiteAncestor)
+			deleteArgs = append(deleteArgs, chromiumHasCrossSiteAncestorForInsert(cookie))
 		}
 		if _, err := tx.ExecContext(ctx, deleteQuery, deleteArgs...); err != nil {
 			return fmt.Errorf("cleanup existing cookie %s: %w", cookie.Name, err)
@@ -383,7 +383,7 @@ func buildInsertCookieQuery(cookie Cookie, encrypted []byte, hasExpires int, col
 	}
 	if columns["has_cross_site_ancestor"] {
 		cols = append(cols, "has_cross_site_ancestor")
-		args = append(args, cookie.HasCrossSiteAncestor)
+		args = append(args, chromiumHasCrossSiteAncestorForInsert(cookie))
 	}
 
 	placeholders := make([]string, len(cols))
@@ -445,7 +445,7 @@ func buildUpdateCookieQuery(cookie Cookie, encrypted []byte, hasExpires int, col
 	}
 	if columns["has_cross_site_ancestor"] {
 		where += " AND has_cross_site_ancestor = ?"
-		args = append(args, 0)
+		args = append(args, chromiumHasCrossSiteAncestorForInsert(cookie))
 	}
 	if columns["source_scheme"] {
 		where += " AND source_scheme = ?"
@@ -464,6 +464,13 @@ func chromiumSourcePortForInsert(cookie Cookie) int {
 		return cookie.SourcePort
 	}
 	return chromiumCookieSourcePortUnspecified
+}
+
+func chromiumHasCrossSiteAncestorForInsert(cookie Cookie) int {
+	if cookie.TopFrameSiteKey == "" {
+		return 1
+	}
+	return cookie.HasCrossSiteAncestor
 }
 
 func chromiumCookiesHaveDomainHashPrefix(ctx context.Context, db *sql.DB) (bool, error) {

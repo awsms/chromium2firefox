@@ -66,6 +66,15 @@ func TestImportCookies(t *testing.T) {
 		t.Fatalf("source_port = %d, want %d", sourcePort, chromiumCookieSourcePortUnspecified)
 	}
 
+	var hasCrossSiteAncestor int
+	err = db.QueryRow("SELECT has_cross_site_ancestor FROM cookies WHERE name = 'test-cookie'").Scan(&hasCrossSiteAncestor)
+	if err != nil {
+		t.Fatalf("query has_cross_site_ancestor error = %v", err)
+	}
+	if hasCrossSiteAncestor != 1 {
+		t.Fatalf("has_cross_site_ancestor = %d, want 1 for unpartitioned cookie", hasCrossSiteAncestor)
+	}
+
 	// Try to decrypt it back to verify update
 	v11Password, v11PasswordErr := lookupV11Password(ctx, cookiesPath)
 	decrypted, err := decryptCookieValue(".example.com", encryptedValue, false, v11Password, v11PasswordErr)
@@ -172,6 +181,67 @@ func TestImportCookiesPreservesDistinctChromiumCookieKeys(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("expected 2 distinct cookie rows, got %d", count)
+	}
+}
+
+func TestImportCookiesReplacesLegacyUnpartitionedCookieAlias(t *testing.T) {
+	ctx := context.Background()
+	chromiumDir := t.TempDir()
+	cookiesPath := filepath.Join(chromiumDir, "Cookies_LegacyAlias")
+
+	createChromiumCookiesEmptyDB(t, cookiesPath)
+
+	db, err := sql.Open("sqlite", cookiesPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO cookies (
+		creation_utc, host_key, top_frame_site_key, name, value,
+		encrypted_value, path, expires_utc, is_secure, is_httponly,
+		last_access_utc, has_expires, is_persistent, priority, samesite,
+		source_scheme, source_port, is_public_suffix, last_update_utc,
+		source_type, has_cross_site_ancestor
+	) VALUES (
+		1, '.legacy.com', '', 'session', '', x'00', '/', 0, 0, 0,
+		1, 0, 0, 1, -1, 2, -1, 0, 0, 0, 0
+	)`)
+	if err != nil {
+		t.Fatalf("insert legacy alias cookie error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db error = %v", err)
+	}
+
+	cookies := []Cookie{
+		{
+			HostKey: ".legacy.com",
+			Name:    "session",
+			Value:   "new-value",
+			Path:    "/",
+		},
+	}
+	if err := ImportCookies(ctx, cookiesPath, cookies, 1024, nil); err != nil {
+		t.Fatalf("ImportCookies() error = %v", err)
+	}
+
+	db, err = sql.Open("sqlite", cookiesPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	var hasCrossSiteAncestor int
+	err = db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(has_cross_site_ancestor), -1)
+		FROM cookies WHERE host_key = '.legacy.com' AND name = 'session'`).Scan(&count, &hasCrossSiteAncestor)
+	if err != nil {
+		t.Fatalf("query imported alias cookie error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("cookie count = %d, want 1", count)
+	}
+	if hasCrossSiteAncestor != 1 {
+		t.Fatalf("has_cross_site_ancestor = %d, want 1", hasCrossSiteAncestor)
 	}
 }
 
